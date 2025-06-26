@@ -1,0 +1,91 @@
+Optuna:
+
+mkdir -p output
+
+-> eskapee-train.csv
+python -u -m scripts.tune_hpo \
+    --data_cache_dir cache/eskapee-train/ \
+    plasgraph_config.yaml \
+    plasgraph2-datasets/eskapee-train.csv \
+    plasgraph2-datasets/ \
+    output/ESKAPEE_hpo_study \
+    > output/hpo.log 2> output/hpo.err
+
+-> eskapee-train-small.csv
+python -u -m scripts.tune_hpo \
+    --data_cache_dir cache/eskapee-train/ \
+    plasgraph_config.yaml \
+    plasgraph2-datasets/eskapee-train-small.csv \
+    plasgraph2-datasets/ \
+    output/ESKAPEE_hpo_study \
+    > output/hpo.log 2> output/hpo.err
+
+
+Final Training:
+
+-> eskapee-train.csv
+python -u -m scripts.train \
+    --data_cache_dir cache/eskapee-train/ \
+    plasgraph_config.yaml \
+    output/ESKAPEE_hpo_study/best_arch_params.yaml \
+    plasgraph2-datasets/eskapee-train.csv \
+    plasgraph2-datasets/ \
+    output/ESKAPEE_final_model/ \
+    > output/train.log 2> output/train.err
+
+-> eskapee-train-small.csv
+python -u -m scripts.train \
+    --data_cache_dir cache/eskapee-train/ \
+    plasgraph_config.yaml \
+    output/ESKAPEE_hpo_study/best_arch_params.yaml \
+    plasgraph2-datasets/eskapee-train-small.csv \
+    plasgraph2-datasets/ \
+    output/ESKAPEE_final_model/ \
+    > output/train.log 2> output/train.err
+
+
+Classify:
+
+python -m scripts.classify gfa \
+    output/ESKAPEE_final_model/ \
+    ~/plasgraph2-datasets/eskapee-test/robertson-benchmark_paer-SAMN10163177-s.gfa.gz \
+    SAMN10163177_output_new.csv
+
+
+Evaluate:
+
+mkdir -p output/evaluation_results/
+
+-> eskapee-test.csv
+python -m scripts.evaluate \
+    output/ESKAPEE_final_model/ \
+    plasgraph2-datasets/eskapee-test.csv \
+    plasgraph2-datasets/ \
+    output/evaluation_results/ \
+    > output/evaluation_results/eval.log 2> output/evaluation_results/eval.err
+
+-> eskapee-test-small.csv
+python -m scripts.evaluate \
+    output/ESKAPEE_final_model/ \
+    plasgraph2-datasets/eskapee-test-small.csv \
+    plasgraph2-datasets/ \
+    output/evaluation_results/ \
+    > output/evaluation_results/eval.log 2> output/evaluation_results/eval.err
+
+
+Explain:
+
+python -m scripts.explain list-contigs \
+    output/ESKAPEE_final_model/ \
+    eskapee-test/robertson-benchmark_paer-SAMN10163177-s.gfa.gz \
+    SAMN10163177 \
+    --file_prefix plasgraph2-datasets/
+
+
+python -m scripts.explain node \
+    output/ESKAPEE_final_model/ \
+    eskapee-test/robertson-benchmark_paer-SAMN10163177-s.gfa.gz \
+    SAMN10163177 \
+    'Contig_42_280.615' \
+    output/explanation_node/ \
+    --file_prefix plasgraph2-datasets/

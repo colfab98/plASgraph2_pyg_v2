@@ -1,0 +1,13 @@
+# Python Virtual Environment
+.venv/
+
+# Caches and generated files
+__pycache__/
+cache/
+output/
+
+# macOS specific
+.DS_Store
+
+# Dataset
+plasgraph2-datasets/

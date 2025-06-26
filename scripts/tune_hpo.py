@@ -1,0 +1,103 @@
+# In scripts/tune_hpo.py
+
+import argparse
+import os
+import yaml
+import numpy as np
+import optuna
+import torch
+from sklearn.model_selection import KFold
+
+# Import modules from our new library structure
+from plasgraph.data import Dataset_Pytorch
+from plasgraph.config import config as Config
+from plasgraph.engine import objective # <-- The core logic is now imported!
+
+import optuna.visualization as vis
+
+def main():
+    parser = argparse.ArgumentParser(description="Run Optuna hyperparameter search for plASgraph2.")
+    parser.add_argument("config_file", help="YAML configuration file")
+    parser.add_argument("train_file_list", help="CSV file listing training samples")
+    parser.add_argument("file_prefix", help="Common prefix for all filenames")
+    parser.add_argument("model_output_dir", help="Output folder for Optuna study and results")
+    parser.add_argument("--data_cache_dir", required=True, help="Directory to store/load the processed graph data.")
+    args = parser.parse_args()
+
+    # 1. Load Config and Data
+    parameters = Config(args.config_file)
+    parameters.config_file_path = args.config_file
+
+    all_graphs = Dataset_Pytorch(
+        root=args.data_cache_dir,
+        file_prefix=args.file_prefix,
+        train_file_list=args.train_file_list,
+        parameters=parameters
+    )
+    data = all_graphs[0]
+    G = all_graphs.G
+    node_list = all_graphs.node_list
+
+    parameters['n_input_features'] = data.num_node_features
+
+    os.makedirs(args.model_output_dir, exist_ok=True)
+
+    # 2. Setup for Cross-Validation
+    labeled_indices = np.array([i for i, node_id in enumerate(node_list) if G.nodes[node_id]["text_label"] != "unlabeled"])
+    kf = KFold(n_splits=parameters["k_folds"], shuffle=True, random_state=parameters["random_seed"])
+    splits = list(kf.split(labeled_indices))
+
+    # 3. Setup Device
+    if torch.cuda.is_available(): device = torch.device("cuda")
+    elif torch.backends.mps.is_available(): device = torch.device("mps")
+    else: device = torch.device("cpu")
+    print(f"Using device: {device}")
+    data = data.to(device)
+
+    # 4. Run Optuna Study
+    study = optuna.create_study(direction="minimize", pruner=optuna.pruners.MedianPruner())
+    study.optimize(
+        lambda trial: objective(trial, parameters, data, device, splits, labeled_indices),
+        n_trials=parameters["optuna_n_trials"],
+        show_progress_bar=True
+    )
+
+    # 5. Save Results
+    print("\nOptuna study finished.")
+    best_trial = study.best_trial
+    print(f"  Value (Best Avg Validation Loss): {best_trial.value:.4f}")
+
+    best_arch_params = parameters._params.copy()
+    best_arch_params.update(study.best_params)
+
+    if 'features' in best_arch_params and isinstance(best_arch_params['features'], tuple):
+        best_arch_params['features'] = ",".join(best_arch_params['features'])
+
+    best_params_path = os.path.join(args.model_output_dir, "best_arch_params.yaml")
+    with open(best_params_path, 'w') as f:
+        yaml.dump(best_arch_params, f, sort_keys=False)
+    print(f"\n✅ Best architecture parameters saved to: {best_params_path}")
+
+    # 6. Generate and save visualizations
+    print("Generating Optuna visualizations...")
+    optuna_viz_dir = os.path.join(args.model_output_dir, "optuna_visualizations")
+    os.makedirs(optuna_viz_dir, exist_ok=True)
+
+    try:
+        fig_history = vis.plot_optimization_history(study)
+        fig_history.write_image(os.path.join(optuna_viz_dir, "optimization_history.png"))
+
+        fig_importance = vis.plot_param_importances(study)
+        fig_importance.write_image(os.path.join(optuna_viz_dir, "param_importances.png"))
+
+        fig_parallel = vis.plot_parallel_coordinate(study)
+        fig_parallel.write_image(os.path.join(optuna_viz_dir, "parallel_coordinate.png"))
+
+        print(f"✅ Visualizations saved to: {optuna_viz_dir}")
+    except Exception as e:
+        print(f"Could not generate all Optuna visualizations: {e}")
+        print("Please ensure plotly and kaleido are installed (`pip install plotly kaleido`).")
+
+
+if __name__ == "__main__":
+    main()
