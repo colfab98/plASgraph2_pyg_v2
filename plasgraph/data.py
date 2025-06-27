@@ -8,6 +8,7 @@ import itertools
 import fileinput
 import math
 import re
+import subprocess
 
 from transformers import AutoModel, AutoTokenizer, BertModel
 from torch.nn.functional import cosine_similarity
@@ -151,17 +152,32 @@ class Dataset_Pytorch(InMemoryDataset):
         self.node_list = list(self.G)
 
 
-        # --- NEW: CONDITIONAL FEATURE GENERATION ---
         if self.parameters['feature_generation_method'] == 'evo':
             # --- EVO PATH ---
             print("Using 'evo' feature generation method.")
-            if torch.cuda.is_available():
-                device = "cuda"
-            elif torch.backends.mps.is_available():
-                device = "mps"
-            else:
-                device = "cpu"
+
+            def detect_device():
+                if torch.cuda.is_available():
+                    try:
+                        output = subprocess.check_output(
+                            ["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
+                            text=True
+                        )
+                        gpus = [line.strip() for line in output.splitlines()]
+                        if gpus:
+                            print(f"✅ Detected GPU(s): {gpus}")
+                            return "cuda"
+                    except Exception as e:
+                        print(f"⚠️ CUDA available but `nvidia-smi` failed: {e}")
+                elif torch.backends.mps.is_available():
+                    print("✅ Using MPS (Apple Metal Performance Shaders)")
+                    return "mps"
+                print("⚠️ Defaulting to CPU (no GPU detected)")
+                return "cpu"
+
+            device = detect_device()
             evo_gen = EvoFeatureGenerator(self.parameters['evo_model_name'], device)
+
 
             total_nodes = len(self.node_list)
             

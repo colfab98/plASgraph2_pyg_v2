@@ -47,8 +47,8 @@ edge_gate_hidden_dim: 32
 k_folds: 5
 
 
-optuna_n_trials: 10
-epochs_trials: 50
+optuna_n_trials: 20
+epochs_trials: 10
 
 epochs: 1000
 

@@ -14,6 +14,12 @@ from plasgraph.config import config as Config
 from plasgraph.engine import objective # <-- The core logic is now imported!
 
 import optuna.visualization as vis
+import matplotlib.pyplot as plt
+from optuna.visualization.matplotlib import (
+    plot_optimization_history,
+    plot_param_importances,
+    plot_parallel_coordinate
+)
 
 def main():
     parser = argparse.ArgumentParser(description="Run Optuna hyperparameter search for plASgraph2.")
@@ -79,24 +85,42 @@ def main():
     print(f"\n✅ Best architecture parameters saved to: {best_params_path}")
 
     # 6. Generate and save visualizations
-    print("Generating Optuna visualizations...")
+    print("Generating Optuna visualizations (matplotlib backend)...")
     optuna_viz_dir = os.path.join(args.model_output_dir, "optuna_visualizations")
     os.makedirs(optuna_viz_dir, exist_ok=True)
 
     try:
-        fig_history = vis.plot_optimization_history(study)
-        fig_history.write_image(os.path.join(optuna_viz_dir, "optimization_history.png"))
+        # Optimization history
+        ax = plot_optimization_history(study)
+        fig = ax.get_figure()
+        fig.set_size_inches(8, 6)
+        fig.tight_layout()
+        fig.savefig(os.path.join(optuna_viz_dir, "optimization_history.png"))
+        plt.close(fig)
 
-        fig_importance = vis.plot_param_importances(study)
-        fig_importance.write_image(os.path.join(optuna_viz_dir, "param_importances.png"))
 
-        fig_parallel = vis.plot_parallel_coordinate(study)
-        fig_parallel.write_image(os.path.join(optuna_viz_dir, "parallel_coordinate.png"))
+        # Parameter importances
+        ax = plot_param_importances(study)
+        fig = ax.get_figure()
+        fig.set_size_inches(8, 6)
+        fig.tight_layout()
+        fig.savefig(os.path.join(optuna_viz_dir, "param_importances.png"))
+        plt.close(fig)
+
+        # Parallel coordinates
+        ax = plot_parallel_coordinate(study)
+        fig = ax.get_figure()
+        ax.grid(False)  # <--- turn off the grid
+        fig.set_size_inches(10, 6)
+        fig.tight_layout()
+        fig.savefig(os.path.join(optuna_viz_dir, "parallel_coordinate.png"))
+        plt.close(fig)
 
         print(f"✅ Visualizations saved to: {optuna_viz_dir}")
+
     except Exception as e:
-        print(f"Could not generate all Optuna visualizations: {e}")
-        print("Please ensure plotly and kaleido are installed (`pip install plotly kaleido`).")
+        print(f"⚠️ Could not generate all Optuna visualizations: {e}")
+
 
 
 if __name__ == "__main__":
