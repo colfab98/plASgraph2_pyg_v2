@@ -6,7 +6,7 @@ channels:
   - defaults
 dependencies:
   - python=3.11
-  - pytorch
+  - pytorch>=2.6
   - torchvision
   - torchaudio
   - pytorch-cuda=12.4
@@ -16,4 +16,11 @@ dependencies:
   - pandas=2.2.3
   - matplotlib=3.10.3
   - pyyaml=6.0.2
-
+  - torch-geometric
+  - transformers
+  - networkx
+  - seaborn
+  - biopython
+  - plotly
+  - pip:
+    - kaleido
