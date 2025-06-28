@@ -16,6 +16,9 @@ from plasgraph.engine import train_final_model # <-- Import the new engine funct
 
 from plasgraph.engine import tune_thresholds, train_final_model # <-- Import the new engine functions
 
+from accelerate import Accelerator
+
+
 def main():
     parser = argparse.ArgumentParser(description="Train a final plASgraph2 model.")
     parser.add_argument("config_file", help="Base YAML configuration file")
@@ -25,6 +28,9 @@ def main():
     parser.add_argument("model_output_dir", help="Output folder for final model and logs")
     parser.add_argument("--data_cache_dir", required=True, help="Directory to store/load the processed graph data.")
     args = parser.parse_args()
+
+    accelerator = Accelerator()
+
 
     # 1. Load base config and update with best HPO params
     parameters = Config(args.config_file)
@@ -48,11 +54,8 @@ def main():
     node_list = all_graphs.node_list
     
     # 3. Setup Device and Cross-Validation Splits
-    if torch.cuda.is_available(): device = torch.device("cuda")
-    elif torch.backends.mps.is_available(): device = torch.device("mps")
-    else: device = torch.device("cpu")
-    print(f"Using device: {device}")
-    data = data.to(device)
+    accelerator.print(f"Using device: {accelerator.device}")
+
 
     labeled_indices = np.array([i for i, node_id in enumerate(node_list) if G.nodes[node_id]["text_label"] != "unlabeled"])
     kf = KFold(n_splits=parameters["k_folds"], shuffle=True, random_state=parameters["random_seed"])
@@ -71,16 +74,18 @@ def main():
     parameters['chromosome_threshold'] = avg_chromosome_thresh
 
     # 5. REVISED STEP: Train the final model on all data
-    final_model = train_final_model(parameters, data, device, splits, labeled_indices, log_dir)
+    final_model, final_parameters = train_final_model(accelerator, parameters, data, splits, labeled_indices, log_dir)
 
     # 6. Save the final artifacts
-    final_model_path = os.path.join(args.model_output_dir, "final_model.pt")
-    torch.save(final_model.state_dict(), final_model_path)
+    if accelerator.is_main_process:
+        final_model_path = os.path.join(args.model_output_dir, "final_model.pt")
+        # The returned model is already unwrapped.
+        torch.save(final_model.state_dict(), final_model_path)
 
-    final_parameters_path = os.path.join(args.model_output_dir, "final_model_config_with_thresholds.yaml")
-    parameters.write_yaml(final_parameters_path)
+        final_parameters_path = os.path.join(args.model_output_dir, "final_model_config_with_thresholds.yaml")
+        final_parameters.write_yaml(final_parameters_path)
     
-    print(f"\n✅ Final model and config (with tuned thresholds) saved to {args.model_output_dir}")
+        accelerator.print(f"\n✅ Final model and config saved to {args.model_output_dir}")
 
 
 if __name__ == "__main__":

@@ -21,5 +21,6 @@ dependencies:
       - torch==2.7.1
       - torchvision
       - torchaudio
+      - accelerate==0.31.0
       - kaleido
       - --extra-index-url https://download.pytorch.org/whl/cu121
