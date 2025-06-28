@@ -62,7 +62,7 @@ def main():
 
 
     # 4. Run Optuna Study
-    study = optuna.create_study(direction="minimize", pruner=optuna.pruners.MedianPruner())
+    study = optuna.create_study(direction="maximize", pruner=optuna.pruners.MedianPruner())
     study.optimize(
         lambda trial: objective(trial, accelerator, parameters, data, splits, labeled_indices),
         n_trials=parameters["optuna_n_trials"],
@@ -73,7 +73,7 @@ def main():
     if accelerator.is_main_process:
         accelerator.print("\nOptuna study finished.")
         best_trial = study.best_trial
-        accelerator.print(f"  Value (Best Avg Validation Loss): {best_trial.value:.4f}")
+        accelerator.print(f"  Value (Best Avg AUROC): {best_trial.value:.4f}")
 
         best_arch_params = parameters._params.copy()
         best_arch_params.update(study.best_params)

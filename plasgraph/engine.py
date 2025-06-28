@@ -15,6 +15,7 @@ import torch.optim as optim
 from . import utils
 
 import copy
+from sklearn.metrics import roc_auc_score
 
 
 def objective(trial, accelerator, parameters, data, splits, labeled_indices):
@@ -25,10 +26,10 @@ def objective(trial, accelerator, parameters, data, splits, labeled_indices):
 
     trial_params_dict['l2_reg'] = trial.suggest_float("l2_reg", 1e-7, 1e-2, log=True)
     trial_params_dict['n_channels'] = trial.suggest_int("n_channels", 64, 160, step=16)
-    trial_params_dict['n_gnn_layers'] = trial.suggest_int("n_gnn_layers", 6, 12)
+    trial_params_dict['n_gnn_layers'] = trial.suggest_int("n_gnn_layers", 2, 6)
     trial_params_dict['dropout_rate'] = trial.suggest_float("dropout_rate", 0.0, 0.5)
     trial_params_dict['gradient_clipping'] = trial.suggest_float("gradient_clipping", 0.0, 0.7)
-    trial_params_dict['edge_gate_hidden_dim'] = trial.suggest_int("edge_gate_hidden_dim", 8, 200, step=8)
+    trial_params_dict['edge_gate_hidden_dim'] = trial.suggest_int("edge_gate_hidden_dim", 8, 80, step=8)
     trial_params_dict['n_channels_preproc'] = trial.suggest_int("n_channels_preproc", 2, 25, step=2)
     
     trial_config_obj = config.config(parameters.config_file_path)
@@ -36,7 +37,8 @@ def objective(trial, accelerator, parameters, data, splits, labeled_indices):
 
     data = data.to(accelerator.device)
 
-    fold_losses = []
+    fold_aurocs = []
+
     for fold_idx, (train_idx, val_idx) in enumerate(splits):
         
         if trial_config_obj['model_type'] == 'GCNModel':
@@ -61,6 +63,9 @@ def objective(trial, accelerator, parameters, data, splits, labeled_indices):
 
         best_val_loss_for_fold = float("inf")
         patience_for_fold = 0
+
+        best_model_state_for_fold = None
+
         
         for epoch in range(parameters["epochs_trials"]):
             model.train()
@@ -87,20 +92,57 @@ def objective(trial, accelerator, parameters, data, splits, labeled_indices):
             if val_loss.item() < best_val_loss_for_fold:
                 best_val_loss_for_fold = val_loss.item()
                 patience_for_fold = 0
+                # ADDED: Save the best model state
+                unwrapped_model = accelerator.unwrap_model(model)
+                best_model_state_for_fold = copy.deepcopy(unwrapped_model.state_dict())
             else:
                 patience_for_fold += 1
                 if patience_for_fold >= parameters["early_stopping_patience"]:
                     break
         
-        fold_losses.append(best_val_loss_for_fold)
+        if best_model_state_for_fold:
+            # Create a new model instance for inference to avoid issues with the accelerator-wrapped model
+            if trial_config_obj['model_type'] == 'GCNModel':
+                inference_model = GCNModel(trial_config_obj)
+            else:
+                inference_model = GGNNModel(trial_config_obj)
+            
+            inference_model.load_state_dict(best_model_state_for_fold)
+            inference_model = inference_model.to(accelerator.device)
+            inference_model.eval()
+
+            with torch.no_grad():
+                # Get raw logits from the model
+                outputs = inference_model(data)
+                # Apply sigmoid to get probabilities
+                probs = torch.sigmoid(outputs)
+
+            y_true_fold = data.y[val_fold_indices].cpu().numpy()
+            y_probs_fold = probs[val_fold_indices].cpu().numpy()
+
+            auroc_plasmid = 0.5
+            auroc_chromosome = 0.5
+
+            # Calculate AUROC only if both classes are present in the true labels
+            if len(np.unique(y_true_fold[:, 0])) > 1:
+                auroc_plasmid = roc_auc_score(y_true_fold[:, 0], y_probs_fold[:, 0])
+            if len(np.unique(y_true_fold[:, 1])) > 1:
+                auroc_chromosome = roc_auc_score(y_true_fold[:, 1], y_probs_fold[:, 1])
+
+            # Use the average of plasmid and chromosome AUROC as the fold's score
+            avg_auroc_for_fold = (auroc_plasmid + auroc_chromosome) / 2.0
+            fold_aurocs.append(avg_auroc_for_fold)
+        else:
+            # If no model was saved (e.g., training failed), append a score of 0
+            fold_aurocs.append(0.0)
         
-        trial.report(np.mean(fold_losses), fold_idx)
+        trial.report(np.mean(fold_aurocs), fold_idx)
         if trial.should_prune():
             raise optuna.exceptions.TrialPruned()
 
-    average_val_loss = np.mean(fold_losses)
+    average_auroc = np.mean(fold_aurocs)
     
-    return average_val_loss
+    return average_auroc
 
 
 # ADD THIS CORRECTED FUNCTION TO plasgraph/engine.py

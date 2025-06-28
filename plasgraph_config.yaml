@@ -48,16 +48,16 @@ k_folds: 5
 
 
 optuna_n_trials: 20
-epochs_trials: 50
+epochs_trials: 200
 
-epochs: 1000
+epochs: 200
 
 scheduler_factor : 0.5
 scheduler_patience : 150
 early_stopping_patience_retrain : 200
 
 # Learning rate
-learning_rate: 0.005
+learning_rate: 0.001
 
 
 feature_generation_method: evo
