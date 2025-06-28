@@ -97,21 +97,123 @@ def objective(trial, parameters, data, device, splits, labeled_indices):
     return average_val_loss
 
 
+# ADD THIS ENTIRE NEW FUNCTION TO engine.py
+
+def tune_thresholds(parameters, data, device, splits, labeled_indices, log_dir):
+    """
+    Performs a new K-fold cross-validation using the best hyperparameters
+    to determine the optimal classification thresholds.
+    """
+    print("\n" + "="*60)
+    print("🎯 Tuning Classification Thresholds via Cross-Validation")
+    print("="*60)
+
+    fold_thresholds = {'plasmid': [], 'chromosome': []}
+
+    for fold_idx, (train_idx, val_idx) in enumerate(splits):
+        print(f"\n--- Threshold Tuning: Fold {fold_idx + 1}/{len(splits)} ---")
+
+        # 1. Initialize Model for this fold
+        if parameters['model_type'] == 'GCNModel':
+            model = GCNModel(parameters).to(device)
+        elif parameters['model_type'] == 'GGNNModel':
+            model = GGNNModel(parameters).to(device)
+
+        optimizer = torch.optim.Adam(model.parameters(), lr=parameters['learning_rate'], weight_decay=parameters['l2_reg'])
+        criterion = torch.nn.BCELoss(reduction='none')
+
+        # 2. Create masks for this fold's train/val split
+        train_fold_indices = labeled_indices[train_idx]
+        val_fold_indices = labeled_indices[val_idx]
+        masks_train = torch.zeros(data.num_nodes, dtype=torch.float32, device=device)
+        masks_train[train_fold_indices] = 1.0
+        masks_validate = torch.zeros(data.num_nodes, dtype=torch.float32, device=device)
+        masks_validate[val_fold_indices] = 1.0
+
+        # 3. Train the model on this fold's training data
+        best_val_loss_for_fold = float("inf")
+        patience_for_fold = 0
+        best_model_state_for_fold = None
+
+        for epoch in range(parameters["epochs"]): # Use full epochs for robust training
+            model.train()
+            optimizer.zero_grad()
+            outputs = model(data)
+
+            valid_label_mask = data.y.sum(dim=1) != 0
+            masked_weights_train = masks_train[valid_label_mask]
+            loss_per_node_train = criterion(outputs[valid_label_mask], data.y[valid_label_mask])
+            train_loss = (loss_per_node_train.sum(dim=1) * masked_weights_train).sum() / masked_weights_train.sum()
+
+            train_loss.backward()
+            utils.fix_gradients(parameters, model)
+            optimizer.step()
+
+            # Validation for early stopping
+            model.eval()
+            with torch.no_grad():
+                val_outputs = model(data)
+                masked_weights_val = masks_validate[valid_label_mask]
+                loss_per_node_val = criterion(val_outputs[valid_label_mask], data.y[valid_label_mask])
+                val_loss = (loss_per_node_val.sum(dim=1) * masked_weights_val).sum() / masked_weights_val.sum()
+
+            if val_loss.item() < best_val_loss_for_fold:
+                best_val_loss_for_fold = val_loss.item()
+                best_model_state_for_fold = model.state_dict()
+                patience_for_fold = 0
+            else:
+                patience_for_fold += 1
+                if patience_for_fold >= parameters["early_stopping_patience"]:
+                    print(f"Stopping early at epoch {epoch+1}.")
+                    break
+        
+        # 4. Determine thresholds on this fold's validation data
+        print(f"Loading best model for fold {fold_idx+1} to determine thresholds...")
+        model.load_state_dict(best_model_state_for_fold)
+        
+        # Create a temporary config object for this fold's thresholds
+        temp_params_for_fold = config.config(parameters.config_file_path)
+        temp_params_for_fold._params = parameters._params.copy()
+        
+        fold_log_dir = os.path.join(log_dir, f"threshold_tuning_fold_{fold_idx+1}")
+        os.makedirs(fold_log_dir, exist_ok=True)
+        
+        utils.set_thresholds(model, data, masks_validate, temp_params_for_fold, fold_log_dir)
+        
+        p_thresh = temp_params_for_fold['plasmid_threshold']
+        c_thresh = temp_params_for_fold['chromosome_threshold']
+        print(f"Fold {fold_idx+1} thresholds: Plasmid={p_thresh:.2f}, Chromosome={c_thresh:.2f}")
+        
+        fold_thresholds['plasmid'].append(p_thresh)
+        fold_thresholds['chromosome'].append(c_thresh)
+
+    # 5. Average the thresholds across all folds
+    avg_plasmid_thresh = float(np.mean(fold_thresholds['plasmid']))
+    avg_chromosome_thresh = float(np.mean(fold_thresholds['chromosome']))
+
+    print("\n" + "="*60)
+    print(f"✅ Average thresholds determined: Plasmid={avg_plasmid_thresh:.2f}, Chromosome={avg_chromosome_thresh:.2f}")
+    print("="*60)
+    
+    return avg_plasmid_thresh, avg_chromosome_thresh
+
+
+# REPLACE the existing train_final_model function in engine.py with this one.
 
 def train_final_model(parameters, data, device, splits, labeled_indices, log_dir):
     """
     Trains the final model on all labeled data using the best hyperparameters.
+    Early stopping is monitored using a combined validation set from all folds.
     """
     print("\n" + "="*60)
     print("💾 Training Final Model on ALL Labeled Data")
     print("="*60)
 
-    # --- This entire block is from your original plASgraph2_train.py ---
-    
-    # 1. Setup validation set for plotting and early stopping
-    _, val_indices_for_plot = splits[-1]
+    # 1. Create a combined validation mask from all folds for plotting and early stopping
+    all_val_indices = np.concatenate([val_idx for _, val_idx in splits])
+    val_indices_for_plot = labeled_indices[all_val_indices]
     masks_val_final_plot = torch.zeros(data.num_nodes, dtype=torch.float32, device=device)
-    masks_val_final_plot[labeled_indices[val_indices_for_plot]] = 1.0
+    masks_val_final_plot[val_indices_for_plot] = 1.0
 
     # 2. Initialize Model, Optimizer, Scheduler, Criterion
     if parameters['model_type'] == 'GCNModel':
@@ -125,7 +227,7 @@ def train_final_model(parameters, data, device, splits, labeled_indices, log_dir
                                   patience=parameters['scheduler_patience'])
     criterion = torch.nn.BCELoss(reduction='none')
 
-    # 3. Create mask for all labeled data
+    # 3. Create mask for ALL labeled training data
     masks_train_all = torch.zeros(data.num_nodes, dtype=torch.float32, device=device)
     masks_train_all[labeled_indices] = 1.0
 
@@ -135,6 +237,7 @@ def train_final_model(parameters, data, device, splits, labeled_indices, log_dir
     best_model_state_final = None
     train_losses_final = []
     val_losses_final = []
+    best_epoch = 0
 
     for epoch in range(parameters["epochs"]):
         final_model.train()
@@ -147,15 +250,11 @@ def train_final_model(parameters, data, device, splits, labeled_indices, log_dir
         loss = (loss_per_node.sum(dim=1) * masked_weights_train_all).sum() / masked_weights_train_all.sum()
 
         loss.backward()
-        
-        # We need to move the gradient functions to utils.py
-        grad_magnitudes = utils.get_gradient_magnitudes(final_model)
-        utils.plot_gradient_magnitudes(grad_magnitudes, epoch, log_dir, plot_frequency=100)
+        utils.plot_gradient_magnitudes(utils.get_gradient_magnitudes(final_model), epoch, log_dir, plot_frequency=100)
         utils.fix_gradients(parameters, final_model)
-        
         optimizer.step()
 
-        # --- (Copy the rest of the loop: validation, early stopping, printing) ---
+        # Validation on the combined validation set
         final_model.eval()
         with torch.no_grad():
             val_outputs = final_model(data)
@@ -166,52 +265,50 @@ def train_final_model(parameters, data, device, splits, labeled_indices, log_dir
                 val_loss = (loss_per_node_val.sum(dim=1) * masked_weights_val).sum() / masked_weights_val.sum()
                 val_losses_final.append(val_loss.item())
             else:
-                val_losses_final.append(0.0)
+                val_losses_final.append(0.0) # Should not happen if there are validation folds
         train_losses_final.append(loss.item())
-        
+
         scheduler.step(val_loss)
 
         if val_loss < best_val_loss_final:
             best_val_loss_final = val_loss
             best_model_state_final = final_model.state_dict()
             patience_final = 0
+            best_epoch = epoch + 1
         else:
             patience_final += 1
+
         if (epoch + 1) % 10 == 0:
-                current_lr = optimizer.param_groups[0]['lr']
-                print(f"Final training... Epoch {epoch+1}/{parameters['epochs']}, Loss: {loss.item():.4f}, Val Loss: {val_loss:.4f}, LR: {current_lr}")
-    
+            current_lr = optimizer.param_groups[0]['lr']
+            print(f"Final training... Epoch {epoch+1}/{parameters['epochs']}, Loss: {loss.item():.4f}, Val Loss: {val_loss:.4f}, LR: {current_lr}")
+
         if patience_final >= parameters['early_stopping_patience_retrain']:
             print(f"Stopping early at epoch {epoch+1} due to no improvement in validation loss.")
             break
-    
-    # 5. Load best model and set thresholds
-    print(f"\nTraining finished. Loading best model state from epoch {epoch+1-patience_final}.")
+
+    # 5. Load best model state
+    print(f"\nTraining finished. Loading best model state from epoch {best_epoch}.")
     final_model.load_state_dict(best_model_state_final)
 
-    print("Determining final thresholds on the validation set of the last fold...")
-    utils.set_thresholds(final_model, data, masks_val_final_plot, parameters, log_dir)
-    print(f"Optimal thresholds determined: Plasmid={parameters['plasmid_threshold']:.2f}, Chromosome={parameters['chromosome_threshold']:.2f}")
-    
+    # --- PLOTTING (NO THRESHOLDING) ---
     plt.figure(figsize=(10, 6))
     plt.plot(train_losses_final, label='Final Train Loss (on all data)')
-    plt.plot(val_losses_final, label=f"Final Validation Loss (on fold {parameters['k_folds']})")
-    plt.axvline(x=epoch+1-patience_final, color='r', linestyle='--', label='Best Model Epoch')
+    plt.plot(val_losses_final, label=f"Final Validation Loss (on combined val folds)")
+    plt.axvline(x=best_epoch - 1, color='r', linestyle='--', label='Best Model Epoch')
     plt.xlabel('Epoch')
     plt.ylabel('Loss')
     plt.title(f"Final Model Training (Initial LR: {parameters['learning_rate']})")
     plt.ylim(0, 1)
     plt.legend()
     plt.grid(True)
-    
-    # Save the plot to the log directory
+
     plot_path = os.path.join(log_dir, "final_model_training_loss.png")
     plt.savefig(plot_path)
     plt.close()
     print(f"\n✅ Final model training loss plot saved to: {plot_path}")
-    
-    # Return the trained model and the parameters (which now include thresholds)
-    return final_model, parameters
+
+    # Return only the trained model. Parameters are handled in the main script.
+    return final_model
 
 
 

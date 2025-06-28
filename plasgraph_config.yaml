@@ -47,14 +47,14 @@ edge_gate_hidden_dim: 32
 k_folds: 5
 
 
-optuna_n_trials: 30
-epochs_trials: 200
+optuna_n_trials: 20
+epochs_trials: 50
 
 epochs: 1000
 
 scheduler_factor : 0.5
 scheduler_patience : 150
-early_stopping_patience_retrain : 300
+early_stopping_patience_retrain : 200
 
 # Learning rate
 learning_rate: 0.005
