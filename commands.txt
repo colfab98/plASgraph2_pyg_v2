@@ -57,7 +57,7 @@ Evaluate:
 mkdir -p output/evaluation_results/
 
 -> eskapee-test.csv
-python -m scripts.evaluate \
+python -u -m scripts.evaluate \
     output/ESKAPEE_final_model/ \
     plasgraph2-datasets/eskapee-test.csv \
     plasgraph2-datasets/ \
