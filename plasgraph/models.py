@@ -16,7 +16,8 @@ from .utils import apply_thresholds
 activation_map = {
     'relu': F.relu,
     'sigmoid': torch.sigmoid,
-    'none': lambda x: x
+    None: lambda x: x, # Use the Python object None as the key
+    'none': lambda x: x  # Optional: Keep for backward compatibility
 }
 
 class GCNModel(torch.nn.Module):
@@ -76,8 +77,6 @@ class GCNModel(torch.nn.Module):
         x = self.fully_connected_activation(self.final_fc1(x))
         x = self.dropout(x)
         x = self.final_fc2(x)
-
-        x = self.output_activation(x)
 
         return x
     
@@ -243,8 +242,6 @@ class GGNNModel(torch.nn.Module):
 
         x = self.dropout(x) 
         x = self.final_fc2(x) 
-
-        x = self.output_activation(x) 
 
         return x
 

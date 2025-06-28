@@ -42,6 +42,16 @@ python -u -m scripts.train \
     output/ESKAPEE_final_model/ \
     > output/train.log 2> output/train.err
 
+PYTHONUNBUFFERED=1 accelerate launch --mixed_precision=fp16 -m scripts.train \
+    --data_cache_dir cache/eskapee-train/ \
+    plasgraph_config.yaml \
+    output/ESKAPEE_hpo_study/best_arch_params.yaml \
+    plasgraph2-datasets/eskapee-train.csv \
+    plasgraph2-datasets/ \
+    output/ESKAPEE_final_model/ \
+    > output/train.log 2> output/train.err
+
+
 -> eskapee-train-small.csv
 python -u -m scripts.train \
     --data_cache_dir cache/eskapee-train/ \

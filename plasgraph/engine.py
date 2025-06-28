@@ -14,6 +14,8 @@ import torch.optim as optim
 
 from . import utils
 
+import copy
+
 
 def objective(trial, accelerator, parameters, data, splits, labeled_indices):
     """
@@ -43,7 +45,8 @@ def objective(trial, accelerator, parameters, data, splits, labeled_indices):
             model = GGNNModel(trial_config_obj)
 
         optimizer = torch.optim.Adam(model.parameters(), lr=trial_config_obj['learning_rate'], weight_decay=trial_config_obj['l2_reg'])
-        criterion = torch.nn.BCELoss(reduction='none')
+        criterion = torch.nn.BCEWithLogitsLoss(reduction='none')
+
 
         model, optimizer = accelerator.prepare(model, optimizer)
 
@@ -100,37 +103,45 @@ def objective(trial, accelerator, parameters, data, splits, labeled_indices):
     return average_val_loss
 
 
-# ADD THIS ENTIRE NEW FUNCTION TO engine.py
+# ADD THIS CORRECTED FUNCTION TO plasgraph/engine.py
 
-def tune_thresholds(parameters, data, device, splits, labeled_indices, log_dir):
+def tune_thresholds(accelerator, parameters, data, splits, labeled_indices, log_dir):
     """
     Performs a new K-fold cross-validation using the best hyperparameters
     to determine the optimal classification thresholds.
+    This version is fully compatible with Accelerate.
     """
-    print("\n" + "="*60)
-    print("🎯 Tuning Classification Thresholds via Cross-Validation")
-    print("="*60)
+    accelerator.print("\n" + "="*60)
+    accelerator.print("🎯 Tuning Classification Thresholds via Cross-Validation")
+    accelerator.print("="*60)
 
+    # Move data to the correct device once
+    data = data.to(accelerator.device)
+    
     fold_thresholds = {'plasmid': [], 'chromosome': []}
 
     for fold_idx, (train_idx, val_idx) in enumerate(splits):
-        print(f"\n--- Threshold Tuning: Fold {fold_idx + 1}/{len(splits)} ---")
+        accelerator.print(f"\n--- Threshold Tuning: Fold {fold_idx + 1}/{len(splits)} ---")
 
         # 1. Initialize Model for this fold
         if parameters['model_type'] == 'GCNModel':
-            model = GCNModel(parameters).to(device)
+            model = GCNModel(parameters)
         elif parameters['model_type'] == 'GGNNModel':
-            model = GGNNModel(parameters).to(device)
+            model = GGNNModel(parameters)
 
         optimizer = torch.optim.Adam(model.parameters(), lr=parameters['learning_rate'], weight_decay=parameters['l2_reg'])
-        criterion = torch.nn.BCELoss(reduction='none')
+        # Corrected criterion definition
+        criterion = torch.nn.BCEWithLogitsLoss(reduction='none')
 
-        # 2. Create masks for this fold's train/val split
+        # Use Accelerate to prepare the model and optimizer
+        model, optimizer = accelerator.prepare(model, optimizer)
+
+        # 2. Create masks for this fold's train/val split on the correct device
         train_fold_indices = labeled_indices[train_idx]
         val_fold_indices = labeled_indices[val_idx]
-        masks_train = torch.zeros(data.num_nodes, dtype=torch.float32, device=device)
+        masks_train = torch.zeros(data.num_nodes, dtype=torch.float32, device=accelerator.device)
         masks_train[train_fold_indices] = 1.0
-        masks_validate = torch.zeros(data.num_nodes, dtype=torch.float32, device=device)
+        masks_validate = torch.zeros(data.num_nodes, dtype=torch.float32, device=accelerator.device)
         masks_validate[val_fold_indices] = 1.0
 
         # 3. Train the model on this fold's training data
@@ -148,7 +159,7 @@ def tune_thresholds(parameters, data, device, splits, labeled_indices, log_dir):
             loss_per_node_train = criterion(outputs[valid_label_mask], data.y[valid_label_mask])
             train_loss = (loss_per_node_train.sum(dim=1) * masked_weights_train).sum() / masked_weights_train.sum()
 
-            train_loss.backward()
+            accelerator.backward(train_loss)
             utils.fix_gradients(parameters, model)
             optimizer.step()
 
@@ -162,30 +173,36 @@ def tune_thresholds(parameters, data, device, splits, labeled_indices, log_dir):
 
             if val_loss.item() < best_val_loss_for_fold:
                 best_val_loss_for_fold = val_loss.item()
-                best_model_state_for_fold = model.state_dict()
+                # Unwrap the model before saving its state
+                unwrapped_model = accelerator.unwrap_model(model)
+                best_model_state_for_fold = unwrapped_model.state_dict()
                 patience_for_fold = 0
             else:
                 patience_for_fold += 1
                 if patience_for_fold >= parameters["early_stopping_patience"]:
-                    print(f"Stopping early at epoch {epoch+1}.")
+                    accelerator.print(f"Stopping early at epoch {epoch+1}.")
                     break
         
         # 4. Determine thresholds on this fold's validation data
-        print(f"Loading best model for fold {fold_idx+1} to determine thresholds...")
-        model.load_state_dict(best_model_state_for_fold)
+        accelerator.print(f"Loading best model for fold {fold_idx+1} to determine thresholds...")
+        # Create a new model instance for loading the state, as the original is wrapped by accelerate
+        if parameters['model_type'] == 'GCNModel':
+            inference_model = GCNModel(parameters).to(accelerator.device)
+        else:
+            inference_model = GGNNModel(parameters).to(accelerator.device)
+        inference_model.load_state_dict(best_model_state_for_fold)
         
-        # Create a temporary config object for this fold's thresholds
-        temp_params_for_fold = config.config(parameters.config_file_path)
-        temp_params_for_fold._params = parameters._params.copy()
+        temp_params_for_fold = copy.deepcopy(parameters)
+
         
         fold_log_dir = os.path.join(log_dir, f"threshold_tuning_fold_{fold_idx+1}")
         os.makedirs(fold_log_dir, exist_ok=True)
         
-        utils.set_thresholds(model, data, masks_validate, temp_params_for_fold, fold_log_dir)
+        utils.set_thresholds(inference_model, data, masks_validate, temp_params_for_fold, fold_log_dir) 
         
         p_thresh = temp_params_for_fold['plasmid_threshold']
         c_thresh = temp_params_for_fold['chromosome_threshold']
-        print(f"Fold {fold_idx+1} thresholds: Plasmid={p_thresh:.2f}, Chromosome={c_thresh:.2f}")
+        accelerator.print(f"Fold {fold_idx+1} thresholds: Plasmid={p_thresh:.2f}, Chromosome={c_thresh:.2f}")
         
         fold_thresholds['plasmid'].append(p_thresh)
         fold_thresholds['chromosome'].append(c_thresh)
@@ -194,9 +211,9 @@ def tune_thresholds(parameters, data, device, splits, labeled_indices, log_dir):
     avg_plasmid_thresh = float(np.mean(fold_thresholds['plasmid']))
     avg_chromosome_thresh = float(np.mean(fold_thresholds['chromosome']))
 
-    print("\n" + "="*60)
-    print(f"✅ Average thresholds determined: Plasmid={avg_plasmid_thresh:.2f}, Chromosome={avg_chromosome_thresh:.2f}")
-    print("="*60)
+    accelerator.print("\n" + "="*60)
+    accelerator.print(f"✅ Average thresholds determined: Plasmid={avg_plasmid_thresh:.4f}, Chromosome={avg_chromosome_thresh:.4f}")
+    accelerator.print("="*60)
     
     return avg_plasmid_thresh, avg_chromosome_thresh
 
@@ -229,7 +246,8 @@ def train_final_model(accelerator, parameters, data, splits, labeled_indices, lo
     scheduler = ReduceLROnPlateau(optimizer, mode='min',
                                   factor=parameters['scheduler_factor'],
                                   patience=parameters['scheduler_patience'])
-    criterion = torch.nn.BCELoss(reduction='none')
+    criterion = torch.nn.BCEWithLogitsLoss(reduction='none')
+
 
     final_model, optimizer, scheduler = accelerator.prepare(final_model, optimizer, scheduler)
 

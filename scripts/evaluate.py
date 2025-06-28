@@ -60,7 +60,7 @@ def main():
 
     # 4. Run Inference
     with torch.no_grad():
-        all_nodes_outputs = model(data_test)
+        all_nodes_outputs = torch.sigmoid(model(data_test))
 
     # 5. Calculate Metrics and Generate Plots
     os.makedirs(args.log_dir, exist_ok=True)

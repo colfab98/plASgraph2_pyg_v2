@@ -21,7 +21,7 @@ fully_connected_activation: relu
 # GCN layers activation
 gcn_activation: relu
 # Output layer activation (typically sigmoid, none for squaredhinge activation)
-output_activation: sigmoid
+output_activation: none
 
 ## Miscellaneous parameters
 # GCN L2 regularization penalty

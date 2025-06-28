@@ -66,7 +66,7 @@ def main():
     os.makedirs(threshold_log_dir, exist_ok=True)
     
     avg_plasmid_thresh, avg_chromosome_thresh = tune_thresholds(
-        parameters, data, device, splits, labeled_indices, threshold_log_dir
+        accelerator, parameters, data, splits, labeled_indices, threshold_log_dir
     )
     
     # Add the averaged thresholds to the final parameters object

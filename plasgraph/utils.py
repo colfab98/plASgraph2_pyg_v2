@@ -147,7 +147,8 @@ def set_thresholds(model, data, masks_validate, parameters, log_dir=None):
     with torch.no_grad():
         # Get raw predictions/probabilities from the model for the entire graph
         # model.forward() now applies the output activation, so `outputs` are already probabilities
-        outputs = model(data) 
+        outputs = torch.sigmoid(model(data))
+
         
         # Extract true labels for validation nodes
         # Use data.y for true labels and masks_validate for selection

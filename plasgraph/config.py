@@ -10,7 +10,7 @@ PARAMS = [
     {'name': 'preproc_activation', 'type': str, 'default': 'sigmoid'},
     {'name': 'gcn_activation', 'type': str, 'default': 'relu'},
     {'name': 'fully_connected_activation', 'type': str, 'default': 'relu'},
-    {'name': 'output_activation', 'type': str, 'default': 'sigmoid'},
+    {'name': 'output_activation', 'type': str, 'default': 'none'},
     {'name': 'dropout_rate', 'type': float, 'default': 0.1},
     {'name': 'loss_function', 'type': str, 'default': 'crossentropy'},
     {'name': 'l2_reg', 'type': float, 'default': 2.5e-4},
