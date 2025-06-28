@@ -69,7 +69,11 @@ def plot_gradient_magnitudes(grad_data, epoch, log_dir, plot_frequency=10):
 
     plt.figure(figsize=(15, 8))
     sns.violinplot(x='Layer', y='Gradient Magnitude', data=plot_df, inner='quartile', palette='viridis')
-    plt.yscale('log') # Use log scale for y-axis due to potentially large range of magnitudes
+    
+    # Only set the y-axis to log scale if there are positive gradients to plot
+    if plot_df['Gradient Magnitude'].max() > 0:
+        plt.yscale('log')
+
     plt.title(f'Gradient Magnitude Distribution per Layer (Epoch {epoch})')
     plt.xlabel('Neural Network Layer')
     plt.ylabel('Log Gradient Magnitude')

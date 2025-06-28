@@ -253,7 +253,7 @@ def train_final_model(accelerator, parameters, data, splits, labeled_indices, lo
 
 
     # 3. Create mask for ALL labeled training data
-    masks_train_all = torch.zeros(data.num_nodes, dtype=torch.float32, device=device)
+    masks_train_all = torch.zeros(data.num_nodes, dtype=torch.float32, device=accelerator.device)
     masks_train_all[labeled_indices] = 1.0
 
     # 4. The main training loop
@@ -274,10 +274,15 @@ def train_final_model(accelerator, parameters, data, splits, labeled_indices, lo
         loss_per_node = criterion(outputs[valid_label_mask], data.y[valid_label_mask])
         loss = (loss_per_node.sum(dim=1) * masked_weights_train_all).sum() / masked_weights_train_all.sum()
 
-        if accelerator.is_main_process:
-            utils.plot_gradient_magnitudes(grad_magnitudes, epoch, log_dir, plot_frequency=100)
-        
-        utils.fix_gradients(parameters, final_model)
+        accelerator.backward(loss)
+
+        if parameters['gradient_clipping'] > 0:
+            accelerator.clip_grad_value_(final_model.parameters(), parameters['gradient_clipping'])
+
+        unwrapped_model = accelerator.unwrap_model(final_model)
+        grad_magnitudes = utils.get_gradient_magnitudes(unwrapped_model)
+        utils.plot_gradient_magnitudes(grad_magnitudes, epoch, log_dir, plot_frequency=100)
+
         optimizer.step()
 
         # Validation on the combined validation set
