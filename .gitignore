@@ -5,6 +5,7 @@
 __pycache__/
 cache/
 output/
+other_code/
 
 # macOS specific
 .DS_Store

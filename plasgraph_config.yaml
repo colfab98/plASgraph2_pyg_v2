@@ -64,8 +64,8 @@ feature_generation_method: evo
 evo_model_name: zhihan1996/DNABERT-2-117M
 
 
-# features: coverage_norm,gc_norm,kmer_dot,degree,length_norm,loglength
-features: coverage_norm,gc_norm,degree,length_norm
+features: coverage_norm,gc_norm,kmer_dot,degree,length_norm,loglength
+# features: coverage_norm,gc_norm,degree,length_norm
 
 
-n_input_features: 4100
+n_input_features: 6

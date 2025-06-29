@@ -100,7 +100,7 @@ class EvoFeatureGenerator:
                 batch_sequences = short_sequences_list[i:i + mini_batch_size]
                 batch_indices = short_sequences_indices[i:i + mini_batch_size]
                 
-                print(f"    - Processing mini-batch {i//mini_batch_size + 1}/{(len(short_sequences_list) + mini_batch_size - 1)//mini_batch_size}...", end='\r', flush=True)
+                print(f"    - Processing mini-batch {i//mini_batch_size + 1}/{(len(short_sequences_list) + mini_batch_size - 1)//mini_batch_size}...")
 
                 inputs = self.tokenizer(batch_sequences, return_tensors="pt", padding=True, truncation=True, max_length=512).to(self.device)
                 outputs = self.model(**inputs)
@@ -116,7 +116,7 @@ class EvoFeatureGenerator:
             total_long = len(long_sequences_indices)
             print(f"  > Processing {total_long} long sequences individually...")
             for i, original_index in enumerate(long_sequences_indices):
-                print(f"    - Processing long sequence {i+1}/{total_long}...", end='\r', flush=True)
+                print(f"    - Processing long sequence {i+1}/{total_long}...")
                 long_sequence = sequences[original_index]
                 embedding_np = self.get_embedding(long_sequence)
                 results[original_index] = torch.from_numpy(embedding_np)
@@ -204,19 +204,10 @@ class Dataset_Pytorch(InMemoryDataset):
                 similarity = cosine_similarity(emb_u.unsqueeze(0), emb_v.unsqueeze(0)).item()
                 self.G.edges[u, v]["embedding_cosine_similarity"] = similarity
             
-            # 3. Define the hybrid feature set for nodes
-            # These are the original features you want to keep
-            original_features_to_keep = ['coverage_norm', 'gc_norm', 'degree', 'length_norm']
-            self.parameters['features'] = tuple(original_features_to_keep) + tuple([f'evo_{i}' for i in range(evo_gen.embedding_dim)])
-            
-            # 4. Construct the node feature matrix `x`
-            x_list = []
-            for node_id in self.node_list:
-                original_feats = [self.G.nodes[node_id][f] for f in original_features_to_keep]
-                evo_embedding = self.G.nodes[node_id]["evo_embedding"].numpy()
-                hybrid_vector = np.concatenate([original_feats, evo_embedding])
-                x_list.append(hybrid_vector)
-            x = np.array(x_list)
+            # 3. Construct node features
+            features = self.parameters["features"]
+            print(f"Constructing node features using: {features}")
+            x = np.array([[self.G.nodes[node_id][f] for f in features] for node_id in self.node_list])
             
             # 5. Construct edge attributes
             edge_attr_list = []
