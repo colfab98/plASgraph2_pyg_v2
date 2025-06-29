@@ -62,7 +62,8 @@ def main():
 
 
     # 4. Run Optuna Study
-    study = optuna.create_study(direction="maximize", pruner=optuna.pruners.MedianPruner())
+    pruner = optuna.pruners.MedianPruner(n_startup_trials=30)
+    study = optuna.create_study(direction="maximize", pruner=pruner)
     study.optimize(
         lambda trial: objective(trial, accelerator, parameters, data, splits, labeled_indices),
         n_trials=parameters["optuna_n_trials"],
