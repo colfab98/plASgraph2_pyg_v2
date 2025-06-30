@@ -62,8 +62,17 @@ def main():
 
 
     # 4. Run Optuna Study
-    pruner = optuna.pruners.MedianPruner(n_startup_trials=30)
-    study = optuna.create_study(direction="maximize", pruner=pruner)
+    pruner = optuna.pruners.MedianPruner(n_startup_trials=parameters['n_startup_trials'])
+    study_name = "plasgraph-hpo-study"
+    storage_name = f"sqlite:///{os.path.join(args.model_output_dir, 'hpo_study.db')}"
+
+    study = optuna.create_study(
+        study_name=study_name,
+        storage=storage_name,
+        direction="maximize",
+        pruner=pruner,
+        load_if_exists=True
+    )
     study.optimize(
         lambda trial: objective(trial, accelerator, parameters, data, splits, labeled_indices),
         n_trials=parameters["optuna_n_trials"],

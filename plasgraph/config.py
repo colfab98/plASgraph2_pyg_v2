@@ -40,6 +40,7 @@ PARAMS = [
 
     {'name': 'feature_generation_method', 'type': str, 'default': 'evo'}, # Can be 'kmer' or 'evo'
     {'name': 'evo_model_name', 'type': str, 'default': 'nvidia/Evo-2-8B-base'},
+    {'name': 'n_startup_trials', 'type': int, 'default': 20},
 
 ]
 

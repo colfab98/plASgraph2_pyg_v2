@@ -11,7 +11,7 @@ python -u -m scripts.tune_hpo \
     output/ESKAPEE_hpo_study \
     > output/hpo.log 2> output/hpo.err
 
-PYTHONUNBUFFERED=1 accelerate launch -m --mixed_precision=fp16 scripts.tune_hpo \
+PYTHONUNBUFFERED=1 accelerate launch --num_processes=1 -m --mixed_precision=fp16 scripts.tune_hpo \
     --data_cache_dir cache/eskapee-train/ \
     plasgraph_config.yaml \
     plasgraph2-datasets/eskapee-train.csv \
@@ -42,7 +42,7 @@ python -u -m scripts.train \
     output/ESKAPEE_final_model/ \
     > output/train.log 2> output/train.err
 
-PYTHONUNBUFFERED=1 accelerate launch --mixed_precision=fp16 -m scripts.train \
+PYTHONUNBUFFERED=1 accelerate launch --num_processes=1 --mixed_precision=fp16 -m scripts.train \
     --data_cache_dir cache/eskapee-train/ \
     plasgraph_config.yaml \
     output/ESKAPEE_hpo_study/best_arch_params.yaml \
