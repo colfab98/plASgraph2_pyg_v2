@@ -23,14 +23,17 @@ PYTHONUNBUFFERED=1 accelerate launch --num_processes=1 -m --mixed_precision=fp16
     > output/hpo.log 2> output/hpo.err
 
 
--> eskapee-train-small.csv
-python -u -m scripts.tune_hpo \
-    --data_cache_dir cache/eskapee-train/ \
-    plasgraph_config.yaml \
-    plasgraph2-datasets/eskapee-train-small.csv \
+optuna-dashboard sqlite:///plASgraph2_pyg_v2/output/ESKAPEE_hpo_study/hpo_study.db
+
+
+Analyse Edge Gates:
+
+python -u -m scripts.analyze_gates \
+    output/ESKAPEE_final_model/ \
+    plasgraph2-datasets/eskapee-train.csv \
     plasgraph2-datasets/ \
-    output/ESKAPEE_hpo_study \
-    > output/hpo.log 2> output/hpo.err
+    --data_cache_dir cache/eskapee-train/ \
+    > output/analyze.log 2> output/analyze.err
 
 
 Final Training:
