@@ -136,11 +136,11 @@ def objective(trial, accelerator, parameters, data, splits, labeled_indices):
             # If no model was saved (e.g., training failed), append a score of 0
             fold_aurocs.append(0.0)
         
-        trial.report(np.mean(fold_aurocs), fold_idx)
+        trial.report(np.median(fold_aurocs), fold_idx)
         if trial.should_prune():
             raise optuna.exceptions.TrialPruned()
 
-    average_auroc = np.mean(fold_aurocs)
+    average_auroc = np.median(fold_aurocs)
     
     return average_auroc
 

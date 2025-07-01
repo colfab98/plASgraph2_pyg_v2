@@ -47,11 +47,11 @@ edge_gate_hidden_dim: 32
 k_folds: 5
 
 
-optuna_n_trials: 30
-epochs_trials: 500
-n_startup_trials: 10
+optuna_n_trials: 100
+epochs_trials: 1000
+n_startup_trials: 40
 
-epochs: 500
+epochs: 2000
 
 scheduler_factor : 0.5
 scheduler_patience : 50

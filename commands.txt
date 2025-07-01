@@ -11,6 +11,9 @@ python -u -m scripts.tune_hpo \
     output/ESKAPEE_hpo_study \
     > output/hpo.log 2> output/hpo.err
 
+
+rm output/ESKAPEE_hpo_study/hpo_study.db
+
 PYTHONUNBUFFERED=1 accelerate launch --num_processes=1 -m --mixed_precision=fp16 scripts.tune_hpo \
     --data_cache_dir cache/eskapee-train/ \
     plasgraph_config.yaml \
