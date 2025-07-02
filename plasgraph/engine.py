@@ -24,14 +24,14 @@ def objective(trial, accelerator, parameters, data, splits, labeled_indices):
     """
     trial_params_dict = parameters._params.copy() 
 
-    trial_params_dict['l2_reg'] = trial.suggest_float("l2_reg", 1e-9, 1e-4, log=True)
+    trial_params_dict['l2_reg'] = trial.suggest_float("l2_reg", 1e-10, 1e-5, log=True)
     trial_params_dict['n_channels'] = trial.suggest_int("n_channels", 64, 250, step=16)
-    trial_params_dict['n_gnn_layers'] = trial.suggest_int("n_gnn_layers", 2, 10)
+    trial_params_dict['n_gnn_layers'] = trial.suggest_int("n_gnn_layers", 4, 10)
     trial_params_dict['dropout_rate'] = trial.suggest_float("dropout_rate", 0.0, 0.5)
     trial_params_dict['gradient_clipping'] = trial.suggest_float("gradient_clipping", 0.0, 0.7)
     trial_params_dict['edge_gate_hidden_dim'] = trial.suggest_int("edge_gate_hidden_dim", 8, 160, step=8)
-    trial_params_dict['n_channels_preproc'] = trial.suggest_int("n_channels_preproc", 2, 40, step=2)
-    trial_params_dict['edge_gate_depth'] = trial.suggest_int("edge_gate_depth", 1, 5)
+    trial_params_dict['n_channels_preproc'] = trial.suggest_int("n_channels_preproc", 2, 60, step=2)
+    trial_params_dict['edge_gate_depth'] = trial.suggest_int("edge_gate_depth", 3, 7)
 
     
     trial_config_obj = config.config(parameters.config_file_path)
@@ -364,7 +364,10 @@ def train_final_model(accelerator, parameters, data, splits, labeled_indices, lo
     # 5. Load best model and set thresholds
     accelerator.print(f"\nTraining finished. Loading best model state from epoch {epoch+1-patience_final}.")
     # Accelerate handles loading the state dict into the wrapped model correctly.
-    final_model.load_state_dict(best_model_state_final)
+    unwrapped_model = accelerator.unwrap_model(final_model)
+
+    # Load the state dict into the unwrapped model
+    unwrapped_model.load_state_dict(best_model_state_final)
 
     # --- PLOTTING (NO THRESHOLDING) ---
     plt.figure(figsize=(10, 6))

@@ -29,25 +29,37 @@ DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 class AnalyzableGGNNConv(MessagePassing):
     """A modified GGNNConv layer that stores gate values during message passing."""
-    def __init__(self, in_channels, out_channels, activation='relu', dropout_rate=0.0, edge_gate_hidden_dim=32):
+    def __init__(self, in_channels, out_channels, parameters, activation, dropout_rate, edge_gate_hidden_dim):
         super().__init__(aggr='add')
         self.in_channels = in_channels
         self.out_channels = out_channels
         self.activation = activation_map[activation]
         self.dropout = nn.Dropout(dropout_rate)
         edge_gate_input_dim = in_channels * 2 + 1
-        self.edge_gate_network = nn.Sequential(
-            nn.Linear(edge_gate_input_dim, edge_gate_hidden_dim),
-            nn.ReLU(),
-            nn.Linear(edge_gate_hidden_dim, 1)
-        )
+        edge_gate_hidden_dim = parameters['edge_gate_hidden_dim']
+        edge_gate_depth = parameters['edge_gate_depth'] 
+
+        gate_layers = []
+        # Input layer
+        gate_layers.append(nn.Linear(edge_gate_input_dim, edge_gate_hidden_dim))
+        gate_layers.append(nn.ReLU())
+
+        # Hidden layers (if edge_gate_depth > 1)
+        for _ in range(edge_gate_depth - 1):
+            gate_layers.append(nn.Linear(edge_gate_hidden_dim, edge_gate_hidden_dim))
+            gate_layers.append(nn.ReLU())
+
+        # Output layer
+        gate_layers.append(nn.Linear(edge_gate_hidden_dim, 1))
+
+        self.edge_gate_network = nn.Sequential(*gate_layers)
         self.lin_z = nn.Linear(in_channels + out_channels, out_channels)
         self.lin_r = nn.Linear(in_channels + out_channels, out_channels)
         self.lin_h = nn.Linear(in_channels + out_channels, out_channels)
 
     def forward(self, x, edge_index, edge_attr=None):
         edge_index_with_self_loops, edge_attr_with_self_loops = add_self_loops(
-            edge_index, edge_attr=edge_attr, num_nodes=x.size(0), fill_value=0.
+            edge_index, edge_attr=edge_attr, num_nodes=x.size(0), fill_value=1.
         )
         row, col = edge_index_with_self_loops
         deg = degree(col, x.size(0), dtype=x.dtype)
@@ -99,13 +111,13 @@ class AnalyzableGGNNModel(GGNNModel):
         # Now, overwrite the GGNN layers with our analyzable version
         if self['tie_gnn_layers']:
             self.ggnn_layer = AnalyzableGGNNConv(
-                self['n_channels'], self['n_channels'], activation=self['gcn_activation'],
+                self['n_channels'], self['n_channels'], parameters=parameters, activation=self['gcn_activation'],
                 dropout_rate=self['dropout_rate'], edge_gate_hidden_dim=self['edge_gate_hidden_dim']
             )
         else:
             self.ggnn_layers = nn.ModuleList([
                 AnalyzableGGNNConv(
-                    self['n_channels'], self['n_channels'], activation=self['gcn_activation'],
+                    self['n_channels'], self['n_channels'], parameters=parameters, activation=self['gcn_activation'],
                     dropout_rate=self['dropout_rate'], edge_gate_hidden_dim=self['edge_gate_hidden_dim']
                 ) for _ in range(self['n_gnn_layers'])
             ])
