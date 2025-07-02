@@ -151,7 +151,7 @@ class AnalyzableGGNNModel(GGNNModel):
             
             # We need the edge_index that includes self-loops, as that's what propagate uses
             edge_index_sl, edge_attr_sl = add_self_loops(
-                edge_index, edge_attr=data.edge_attr, num_nodes=data.num_nodes, fill_value=0.
+                edge_index, edge_attr=data.edge_attr, num_nodes=data.num_nodes, fill_value=1.
             )
 
             df = pd.DataFrame({
