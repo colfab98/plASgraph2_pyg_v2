@@ -39,6 +39,16 @@ python -u -m scripts.audit_cached_data \
 
 
 
+python -u -m scripts.analyze_edge_attr \
+    plasgraph_config.yaml \
+    plasgraph2-datasets/eskapee-train.csv \
+    plasgraph2-datasets/ \
+    --data_cache_dir cache/eskapee-train/ \
+    --output_dir feature_analysis_plots/ \
+    > output/analyze_edge_attr.log 2> output/analyze_edge_attr.err
+
+
+
 Final Training:
 
 -> eskapee-train.csv
@@ -68,7 +78,7 @@ python -u -m scripts.analyze_gates \
     plasgraph2-datasets/eskapee-train.csv \
     plasgraph2-datasets/ \
     --data_cache_dir cache/eskapee-train/ \
-    > output/analyze.log 2> output/analyze.err
+    > output/analyze_gates.log 2> output/analyze_gates.err
 
 
 Classify:
