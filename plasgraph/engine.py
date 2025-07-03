@@ -16,6 +16,8 @@ from . import utils
 
 import copy
 from sklearn.metrics import roc_auc_score
+import matplotlib.pyplot as plt
+from .metrics import calculate_and_print_metrics
 
 
 def objective(trial, accelerator, parameters, data, splits, labeled_indices):
@@ -25,13 +27,14 @@ def objective(trial, accelerator, parameters, data, splits, labeled_indices):
     trial_params_dict = parameters._params.copy() 
 
     trial_params_dict['l2_reg'] = trial.suggest_float("l2_reg", 1e-12, 1e-7, log=True)
-    trial_params_dict['n_channels'] = trial.suggest_int("n_channels", 100, 250, step=16)
+    trial_params_dict['n_channels'] = trial.suggest_int("n_channels", 16, 250, step=16)
     trial_params_dict['n_gnn_layers'] = trial.suggest_int("n_gnn_layers", 6, 12)
     trial_params_dict['dropout_rate'] = trial.suggest_float("dropout_rate", 0.0, 0.3)
-    trial_params_dict['gradient_clipping'] = trial.suggest_float("gradient_clipping", 0.4, 1.0)
+    trial_params_dict['gradient_clipping'] = trial.suggest_float("gradient_clipping", 0.0, 1.0)
     trial_params_dict['edge_gate_hidden_dim'] = trial.suggest_int("edge_gate_hidden_dim", 8, 80, step=8)
-    trial_params_dict['n_channels_preproc'] = trial.suggest_int("n_channels_preproc", 10, 50, step=2)
-    trial_params_dict['edge_gate_depth'] = trial.suggest_int("edge_gate_depth", 5, 10)
+    trial_params_dict['n_channels_preproc'] = trial.suggest_int("n_channels_preproc", 10, 50, step=10)
+    trial_params_dict['edge_gate_depth'] = trial.suggest_int("edge_gate_depth", 3, 8)
+    # trial_params_dict['learning_rate'] = trial.suggest_float("learning_rate", 1e-5, 1e-2, log=True)
 
     
     trial_config_obj = config.config(parameters.config_file_path)
@@ -262,132 +265,135 @@ def tune_thresholds(accelerator, parameters, data, splits, labeled_indices, log_
     return avg_plasmid_thresh, avg_chromosome_thresh
 
 
-# REPLACE the existing train_final_model function in engine.py with this one.
-def train_final_model(accelerator, parameters, data, splits, labeled_indices, log_dir):
+def train_final_model(accelerator, parameters, data, splits, labeled_indices, log_dir, G, node_list):
     """
-    Trains the final model on all labeled data using the best hyperparameters.
-    Early stopping is monitored using a combined validation set from all folds.
+    MODIFIED: Trains K-fold models and saves each one for ensembling.
+    This function no longer retrains a single final model. It evaluates and saves
+    the model from each CV fold.
     """
     accelerator.print("\n" + "="*60)
-    accelerator.print("💾 Training Final Model on ALL Labeled Data")
+    accelerator.print("💾 Training K-Fold Ensemble Models")
     accelerator.print("="*60)
 
     data = data.to(accelerator.device)
 
-    # 1. Create a combined validation mask from all folds for plotting and early stopping
-    all_val_indices = np.concatenate([val_idx for _, val_idx in splits])
-    val_indices_for_plot = labeled_indices[all_val_indices]
-    masks_val_final_plot = torch.zeros(data.num_nodes, dtype=torch.float32, device=accelerator.device)
-    masks_val_final_plot[val_indices_for_plot] = 1.0
+    # Create a sub-directory for the ensemble models
+    ensemble_models_dir = os.path.join(log_dir, "ensemble_models")
+    os.makedirs(ensemble_models_dir, exist_ok=True)
+    accelerator.print(f"Ensemble models will be saved to: {ensemble_models_dir}")
 
-    # 2. Initialize Model, Optimizer, Scheduler, Criterion
-    if parameters['model_type'] == 'GCNModel':
-        final_model = GCNModel(parameters)
-    elif parameters['model_type'] == 'GGNNModel':
-        final_model = GGNNModel(parameters)
+    # Create a sub-directory for fold-specific plots
+    cv_plots_dir = os.path.join(log_dir, "cv_fold_plots")
+    os.makedirs(cv_plots_dir, exist_ok=True)
 
-    optimizer = optim.Adam(final_model.parameters(), lr=parameters['learning_rate'], weight_decay=parameters['l2_reg'])
-    scheduler = ReduceLROnPlateau(optimizer, mode='min',
-                                  factor=parameters['scheduler_factor'],
-                                  patience=parameters['scheduler_patience'])
-    criterion = torch.nn.BCEWithLogitsLoss(reduction='none')
+    for fold_idx, (train_idx, val_idx) in enumerate(splits):
+        accelerator.print(f"\n--- Running Fold {fold_idx + 1}/{len(splits)} ---")
 
+        # 1. Initialize Model for this fold
+        if parameters['model_type'] == 'GCNModel':
+            model = GCNModel(parameters)
+        elif parameters['model_type'] == 'GGNNModel':
+            model = GGNNModel(parameters)
 
-    final_model, optimizer, scheduler = accelerator.prepare(final_model, optimizer, scheduler)
+        optimizer = optim.Adam(model.parameters(), lr=parameters['learning_rate'], weight_decay=parameters['l2_reg'])
+        criterion = torch.nn.BCEWithLogitsLoss(reduction='none')
+        model, optimizer = accelerator.prepare(model, optimizer)
 
+        # 2. Create masks for this fold's train/val split
+        train_fold_indices = labeled_indices[train_idx]
+        val_fold_indices = labeled_indices[val_idx]
+        masks_train = torch.zeros(data.num_nodes, dtype=torch.float32, device=accelerator.device)
+        masks_train[train_fold_indices] = 1.0
+        masks_validate = torch.zeros(data.num_nodes, dtype=torch.float32, device=accelerator.device)
+        masks_validate[val_fold_indices] = 1.0
 
-    # 3. Create mask for ALL labeled training data
-    masks_train_all = torch.zeros(data.num_nodes, dtype=torch.float32, device=accelerator.device)
-    masks_train_all[labeled_indices] = 1.0
+        # 3. Train with early stopping
+        best_val_loss_for_fold = float("inf")
+        patience_for_fold = 0
+        best_epoch_for_fold = 0
+        best_model_state_for_fold = None
+        
+        train_losses_fold, val_losses_fold = [], []
 
-    # 4. The main training loop
-    best_val_loss_final = float('inf')
-    patience_final = 0
-    best_model_state_final = None
-    train_losses_final = []
-    val_losses_final = []
-    best_epoch = 0
+        for epoch in range(parameters["epochs"]):
+            model.train()
+            optimizer.zero_grad()
+            outputs = model(data)
 
-    for epoch in range(parameters["epochs"]):
-        final_model.train()
-        optimizer.zero_grad()
-        outputs = final_model(data)
+            valid_label_mask = data.y.sum(dim=1) != 0
+            masked_weights_train = masks_train[valid_label_mask]
+            loss_per_node_train = criterion(outputs[valid_label_mask], data.y[valid_label_mask])
+            train_loss = (loss_per_node_train.sum(dim=1) * masked_weights_train).sum() / masked_weights_train.sum()
+            train_losses_fold.append(train_loss.item())
+            
+            accelerator.backward(train_loss)
+            optimizer.step()
 
-        valid_label_mask = data.y.sum(dim=1) != 0
-        masked_weights_train_all = masks_train_all[valid_label_mask]
-        loss_per_node = criterion(outputs[valid_label_mask], data.y[valid_label_mask])
-        loss = (loss_per_node.sum(dim=1) * masked_weights_train_all).sum() / masked_weights_train_all.sum()
-
-        accelerator.backward(loss)
-
-        if parameters['gradient_clipping'] > 0:
-            accelerator.clip_grad_value_(final_model.parameters(), parameters['gradient_clipping'])
-
-        unwrapped_model = accelerator.unwrap_model(final_model)
-        grad_magnitudes = utils.get_gradient_magnitudes(unwrapped_model)
-        utils.plot_gradient_magnitudes(grad_magnitudes, epoch, log_dir, plot_frequency=100)
-
-        optimizer.step()
-
-        # Validation on the combined validation set
-        final_model.eval()
-        with torch.no_grad():
-            val_outputs = final_model(data)
-            masked_weights_val = masks_val_final_plot[valid_label_mask]
-            val_loss = 0.0
-            if masked_weights_val.sum() > 0:
+            model.eval()
+            with torch.no_grad():
+                val_outputs = model(data)
+                masked_weights_val = masks_validate[valid_label_mask]
                 loss_per_node_val = criterion(val_outputs[valid_label_mask], data.y[valid_label_mask])
                 val_loss = (loss_per_node_val.sum(dim=1) * masked_weights_val).sum() / masked_weights_val.sum()
-                val_losses_final.append(val_loss.item())
+                val_losses_fold.append(val_loss.item())
+
+            if val_loss.item() < best_val_loss_for_fold:
+                best_val_loss_for_fold = val_loss.item()
+                best_epoch_for_fold = epoch + 1
+                patience_for_fold = 0
+                best_model_state_for_fold = copy.deepcopy(accelerator.unwrap_model(model).state_dict())
             else:
-                val_losses_final.append(0.0) # Should not happen if there are validation folds
-        train_losses_final.append(loss.item())
+                patience_for_fold += 1
+                if patience_for_fold >= parameters["early_stopping_patience_retrain"]:
+                    break
+        
+        accelerator.print(f"Fold {fold_idx + 1} finished. Best epoch: {best_epoch_for_fold} with val loss: {best_val_loss_for_fold:.4f}")
 
-        scheduler.step(val_loss)
+        # --- NEW: Save the best model state for this fold ---
+        if best_model_state_for_fold:
+            model_save_path = os.path.join(ensemble_models_dir, f"fold_{fold_idx + 1}_model.pt")
+            accelerator.wait_for_everyone()
+            if accelerator.is_main_process:
+                torch.save(best_model_state_for_fold, model_save_path)
+            accelerator.print(f"  > Saved best model for fold {fold_idx + 1} to: {model_save_path}")
 
-        if val_loss < best_val_loss_final:
-            best_val_loss_final = val_loss
-            unwrapped_model = accelerator.unwrap_model(final_model)
-            best_model_state_final = unwrapped_model.state_dict()
-            patience_final = 0
+        # Plotting for the current fold
+        plt.figure(figsize=(10, 6))
+        plt.plot(train_losses_fold, label='Train Loss')
+        plt.plot(val_losses_fold, label='Validation Loss')
+        plt.axvline(x=best_epoch_for_fold - 1, color='r', linestyle='--', label=f'Best Epoch ({best_epoch_for_fold})')
+        plt.title(f'Fold {fold_idx + 1} Training History')
+        plt.xlabel('Epoch')
+        plt.ylabel('Loss')
+        plt.legend()
+        plt.grid(True)
+        plot_path = os.path.join(cv_plots_dir, f"cv_loss_fold_{fold_idx + 1}.png")
+        plt.savefig(plot_path)
+        plt.close()
+
+        # Evaluation for the current fold
+        accelerator.print(f"\n--- Evaluating Fold {fold_idx + 1} Model on its Validation Set ---")
+        if best_model_state_for_fold:
+            if parameters['model_type'] == 'GCNModel':
+                eval_model = GCNModel(parameters)
+            else:
+                eval_model = GGNNModel(parameters)
+            eval_model.load_state_dict(best_model_state_for_fold)
+            eval_model = accelerator.prepare(eval_model)
+            eval_model.eval()
+
+            with torch.no_grad():
+                outputs = eval_model(data)
+                probs = torch.sigmoid(outputs)
+            
+            calculate_and_print_metrics(probs, data, masks_validate, G, node_list, parameters, verbose=False)
         else:
-            patience_final += 1
+            accelerator.print("No best model state found for this fold, skipping evaluation.")
 
-        if (epoch + 1) % 10 == 0:
-            current_lr = optimizer.param_groups[0]['lr']
-            print(f"Final training... Epoch {epoch+1}/{parameters['epochs']}, Loss: {loss.item():.4f}, Val Loss: {val_loss:.4f}, LR: {current_lr}")
-
-        if patience_final >= parameters['early_stopping_patience_retrain']:
-            print(f"Stopping early at epoch {epoch+1} due to no improvement in validation loss.")
-            break
-
-    # 5. Load best model and set thresholds
-    accelerator.print(f"\nTraining finished. Loading best model state from epoch {epoch+1-patience_final}.")
-    # Accelerate handles loading the state dict into the wrapped model correctly.
-    unwrapped_model = accelerator.unwrap_model(final_model)
-
-    # Load the state dict into the unwrapped model
-    unwrapped_model.load_state_dict(best_model_state_final)
-
-    # --- PLOTTING (NO THRESHOLDING) ---
-    plt.figure(figsize=(10, 6))
-    plt.plot(train_losses_final, label='Final Train Loss (on all data)')
-    plt.plot(val_losses_final, label=f"Final Validation Loss (on combined val folds)")
-    plt.axvline(x=best_epoch - 1, color='r', linestyle='--', label='Best Model Epoch')
-    plt.xlabel('Epoch')
-    plt.ylabel('Loss')
-    plt.title(f"Final Model Training (Initial LR: {parameters['learning_rate']})")
-    plt.ylim(0, 1)
-    plt.legend()
-    plt.grid(True)
-
-    plot_path = os.path.join(log_dir, "final_model_training_loss.png")
-    plt.savefig(plot_path)
-    plt.close()
-    print(f"\n✅ Final model training loss plot saved to: {plot_path}")
-
-    # Return only the trained model. Parameters are handled in the main script.
-    return accelerator.unwrap_model(final_model), parameters
+    # The function now concludes after the loop, as there's no single final model to train.
+    # Return None as the concept of a single "final model" no longer applies.
+    accelerator.print("\n✅ Ensemble model training complete. Models for each fold saved.")
+    return None, parameters
 
 
 

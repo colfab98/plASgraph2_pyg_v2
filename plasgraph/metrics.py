@@ -5,7 +5,7 @@ import torch
 from sklearn.metrics import f1_score, accuracy_score, precision_score, recall_score, roc_auc_score
 from collections import Counter
 
-def calculate_and_print_metrics(outputs, data, masks_test, G, node_list, parameters):
+def calculate_and_print_metrics(outputs, data, masks_test, G, node_list, parameters, verbose=True):
     """
     Calculates and prints per-sample and aggregate metrics for the test set.
     
@@ -29,22 +29,23 @@ def calculate_and_print_metrics(outputs, data, masks_test, G, node_list, paramet
             if G.nodes[node_id]["sample"] == sample_id
         ]
 
-        # --- NEW: Calculate class proportions for the current sample ---
-        current_sample_node_ids = [node_list[i] for i in current_sample_node_indices_global]
-        
-        # Count the text labels for the nodes in the current sample
-        label_counts = Counter(G.nodes[node_id]["text_label"] for node_id in current_sample_node_ids)
-        total_nodes_in_sample = len(current_sample_node_ids)
+        if verbose:
+            # --- NEW: Calculate class proportions for the current sample ---
+            current_sample_node_ids = [node_list[i] for i in current_sample_node_indices_global]
+            
+            # Count the text labels for the nodes in the current sample
+            label_counts = Counter(G.nodes[node_id]["text_label"] for node_id in current_sample_node_ids)
+            total_nodes_in_sample = len(current_sample_node_ids)
 
-        # Format the counts into a readable string
-        counts_str = (
-            f"Counts (P: {label_counts.get('plasmid', 0)}, "
-            f"C: {label_counts.get('chromosome', 0)}, "
-            f"U: {label_counts.get('unlabeled', 0)}, "
-            f"A: {label_counts.get('ambiguous', 0)})"
-        )
+            # Format the counts into a readable string
+            counts_str = (
+                f"Counts (P: {label_counts.get('plasmid', 0)}, "
+                f"C: {label_counts.get('chromosome', 0)}, "
+                f"U: {label_counts.get('unlabeled', 0)}, "
+                f"A: {label_counts.get('ambiguous', 0)})"
+            )
 
-        print(f"\n  Sample {sample_id} | Total Contigs: {total_nodes_in_sample} | {counts_str}")
+            print(f"\n  Sample {sample_id} | Total Contigs: {total_nodes_in_sample} | {counts_str}")
 
         current_sample_node_indices_global = torch.tensor(current_sample_node_indices_global, dtype=torch.long)
 
@@ -54,7 +55,8 @@ def calculate_and_print_metrics(outputs, data, masks_test, G, node_list, paramet
 
         active_mask_for_sample = masks_sample > 0
         if not torch.any(active_mask_for_sample):
-            print(f"  Sample {sample_id} - No labeled contigs to evaluate. Skipping.")
+            if verbose:
+                print(f"  Sample {sample_id} - No labeled contigs to evaluate. Skipping.")
             continue
 
         # --- Plasmid Evaluation ---
@@ -63,7 +65,8 @@ def calculate_and_print_metrics(outputs, data, masks_test, G, node_list, paramet
         
         # --- Conditional Check for Plasmid Metrics ---
         if len(np.unique(y_true_plasmid)) < 2:
-            print(f"  Sample {sample_id} - Test PLASMID   | SKIPPING (only one class present in ground truth)")
+            if verbose:
+                print(f"  Sample {sample_id} - Test PLASMID   | SKIPPING (only one class present in ground truth)")
         else:
             probs_plasmid_sample_active = outputs_sample[active_mask_for_sample, 0]
             y_probs_plasmid = probs_plasmid_sample_active.cpu().numpy()
@@ -87,7 +90,8 @@ def calculate_and_print_metrics(outputs, data, masks_test, G, node_list, paramet
             all_auroc_plasmid_scores.append(auroc_plasmid)
             
             # CHANGED: Update print statement to be more verbose
-            print(f"           Test PLASMID   | F1: {f1_plasmid:.4f} | Acc: {acc_plasmid:.4f} | Prec: {prec_plasmid:.4f} | Rec: {rec_plasmid:.4f} | AUROC: {auroc_plasmid:.4f}")
+            if verbose:
+                print(f"           Test PLASMID   | F1: {f1_plasmid:.4f} | Acc: {acc_plasmid:.4f} | Prec: {prec_plasmid:.4f} | Rec: {rec_plasmid:.4f} | AUROC: {auroc_plasmid:.4f}")
 
         # --- Chromosome Evaluation ---
         labels_chromosome_sample_active = y_sample[active_mask_for_sample, 1]
@@ -95,7 +99,8 @@ def calculate_and_print_metrics(outputs, data, masks_test, G, node_list, paramet
         
         # --- Conditional Check for Chromosome Metrics ---
         if len(np.unique(y_true_chromosome)) < 2:
-            print(f"  Sample {sample_id} - Test CHROMOSOME| SKIPPING (only one class present in ground truth)")
+            if verbose:
+                print(f"  Sample {sample_id} - Test CHROMOSOME| SKIPPING (only one class present in ground truth)")
         else:
             probs_chromosome_sample_active = outputs_sample[active_mask_for_sample, 1]
             y_probs_chromosome = probs_chromosome_sample_active.cpu().numpy()
@@ -119,7 +124,8 @@ def calculate_and_print_metrics(outputs, data, masks_test, G, node_list, paramet
             all_auroc_chromosome_scores.append(auroc_chromosome)
 
             # CHANGED: Update print statement to be more verbose
-            print(f"           Test CHROMOSOME| F1: {f1_chromosome:.4f} | Acc: {acc_chromosome:.4f} | Prec: {prec_chromosome:.4f} | Rec: {rec_chromosome:.4f} | AUROC: {auroc_chromosome:.4f}")
+            if verbose:
+                print(f"           Test CHROMOSOME| F1: {f1_chromosome:.4f} | Acc: {acc_chromosome:.4f} | Prec: {prec_chromosome:.4f} | Rec: {rec_chromosome:.4f} | AUROC: {auroc_chromosome:.4f}")
 
 
     # --- Print Aggregate Metrics ---

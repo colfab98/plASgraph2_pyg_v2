@@ -2,7 +2,6 @@ Optuna:
 
 mkdir -p output
 
--> eskapee-train.csv
 python -u -m scripts.tune_hpo \
     --data_cache_dir cache/eskapee-train/ \
     plasgraph_config.yaml \
@@ -39,19 +38,8 @@ python -u -m scripts.audit_cached_data \
 
 
 
-python -u -m scripts.analyze_edge_attr \
-    plasgraph_config.yaml \
-    plasgraph2-datasets/eskapee-train.csv \
-    plasgraph2-datasets/ \
-    --data_cache_dir cache/eskapee-train/ \
-    --output_dir feature_analysis_plots/ \
-    > output/analyze_edge_attr.log 2> output/analyze_edge_attr.err
-
-
-
 Final Training:
 
--> eskapee-train.csv
 python -u -m scripts.train \
     --data_cache_dir cache/eskapee-train/ \
     plasgraph_config.yaml \
@@ -93,7 +81,6 @@ Evaluate:
 
 mkdir -p output/evaluation_results/
 
--> eskapee-test.csv
 python -u -m scripts.evaluate \
     output/ESKAPEE_final_model/ \
     plasgraph2-datasets/eskapee-test.csv \
@@ -101,13 +88,12 @@ python -u -m scripts.evaluate \
     output/evaluation_results/ \
     > output/evaluation_results/eval.log 2> output/evaluation_results/eval.err
 
--> eskapee-test-small.csv
-python -m scripts.evaluate \
-    output/ESKAPEE_final_model/ \
-    plasgraph2-datasets/eskapee-test-small.csv \
-    plasgraph2-datasets/ \
-    output/evaluation_results/ \
-    > output/evaluation_results/eval.log 2> output/evaluation_results/eval.err
+
+
+
+
+
+
 
 
 Explain:

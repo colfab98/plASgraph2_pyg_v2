@@ -74,18 +74,17 @@ def main():
     parameters['chromosome_threshold'] = avg_chromosome_thresh
 
     # 5. REVISED STEP: Train the final model on all data
-    final_model, final_parameters = train_final_model(accelerator, parameters, data, splits, labeled_indices, log_dir)
+    final_model, final_parameters = train_final_model(
+    accelerator, parameters, data, splits, labeled_indices, log_dir, G, node_list
+)
 
     # 6. Save the final artifacts
     if accelerator.is_main_process:
-        final_model_path = os.path.join(args.model_output_dir, "final_model.pt")
-        # The returned model is already unwrapped.
-        torch.save(final_model.state_dict(), final_model_path)
-
         final_parameters_path = os.path.join(args.model_output_dir, "final_model_config_with_thresholds.yaml")
         final_parameters.write_yaml(final_parameters_path)
     
-        accelerator.print(f"\n✅ Final model and config saved to {args.model_output_dir}")
+        accelerator.print(f"\n✅ Ensemble models saved in {log_dir}")
+        accelerator.print(f"✅ Final config with thresholds saved to {final_parameters_path}")
 
 
 if __name__ == "__main__":
