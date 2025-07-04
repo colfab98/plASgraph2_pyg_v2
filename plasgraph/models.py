@@ -54,7 +54,7 @@ class GCNModel(torch.nn.Module):
 
     def forward(self, data):
         x, edge_index = data.x, data.edge_index
-
+        x = self.preproc(x)
         x = self.preproc_activation(x)
         node_identity = self.fully_connected_activation(self.fc_input_1(x))
         x = self.fully_connected_activation(self.fc_input_2(x))

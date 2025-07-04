@@ -249,7 +249,7 @@ def main():
 
     # --- Load Model ---
     print("Loading trained model...")
-    model_path = os.path.join(args.model_dir, "final_model.pt")
+    model_path = os.path.join(args.model_dir, "final_training_logs", "ensemble_models", "fold_1_model.pt")
     
     # Instantiate our special analyzable model and load the trained weights into it
     model = AnalyzableGGNNModel(parameters)

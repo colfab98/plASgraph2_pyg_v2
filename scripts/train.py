@@ -14,7 +14,7 @@ from plasgraph.engine import train_final_model # <-- Import the new engine funct
 
 # REPLACE the main function in scripts/train.py with this new version.
 
-from plasgraph.engine import tune_thresholds, train_final_model # <-- Import the new engine functions
+from plasgraph.engine import train_final_model # <-- Import the new engine functions
 
 from accelerate import Accelerator
 
@@ -55,36 +55,27 @@ def main():
     
     # 3. Setup Device and Cross-Validation Splits
     accelerator.print(f"Using device: {accelerator.device}")
+    accelerator.print(f"✅ Using model architecture: {parameters['model_type']}")
 
 
     labeled_indices = np.array([i for i, node_id in enumerate(node_list) if G.nodes[node_id]["text_label"] != "unlabeled"])
     kf = KFold(n_splits=parameters["k_folds"], shuffle=True, random_state=parameters["random_seed"])
     splits = list(kf.split(labeled_indices))
 
-    # 4. NEW STEP: Tune thresholds using cross-validation
-    threshold_log_dir = os.path.join(args.model_output_dir, "threshold_tuning_logs")
-    os.makedirs(threshold_log_dir, exist_ok=True)
-    
-    avg_plasmid_thresh, avg_chromosome_thresh = tune_thresholds(
-        accelerator, parameters, data, splits, labeled_indices, threshold_log_dir
+    # 4. Train the K-fold ensemble and determine fold-specific thresholds
+    train_final_model(
+        accelerator, parameters, data, splits, labeled_indices, log_dir, G, node_list
     )
-    
-    # Add the averaged thresholds to the final parameters object
-    parameters['plasmid_threshold'] = avg_plasmid_thresh
-    parameters['chromosome_threshold'] = avg_chromosome_thresh
 
-    # 5. REVISED STEP: Train the final model on all data
-    final_model, final_parameters = train_final_model(
-    accelerator, parameters, data, splits, labeled_indices, log_dir, G, node_list
-)
-
-    # 6. Save the final artifacts
+    # 5. Save the base configuration file for future predictions
     if accelerator.is_main_process:
-        final_parameters_path = os.path.join(args.model_output_dir, "final_model_config_with_thresholds.yaml")
-        final_parameters.write_yaml(final_parameters_path)
-    
-        accelerator.print(f"\n✅ Ensemble models saved in {log_dir}")
-        accelerator.print(f"✅ Final config with thresholds saved to {final_parameters_path}")
+        # Save the base parameters used for the run (without fold-specific thresholds)
+        base_params_path = os.path.join(args.model_output_dir, "base_model_config.yaml")
+        parameters.write_yaml(base_params_path)
+        
+        ensemble_dir = os.path.join(log_dir, "ensemble_models")
+        accelerator.print(f"\n✅ Training complete. Ensemble models and their thresholds saved in: {ensemble_dir}")
+        accelerator.print(f"✅ Base config saved to: {base_params_path}")
 
 
 if __name__ == "__main__":

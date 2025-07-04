@@ -18,6 +18,7 @@ import copy
 from sklearn.metrics import roc_auc_score
 import matplotlib.pyplot as plt
 from .metrics import calculate_and_print_metrics
+import yaml
 
 
 def objective(trial, accelerator, parameters, data, splits, labeled_indices):
@@ -150,120 +151,6 @@ def objective(trial, accelerator, parameters, data, splits, labeled_indices):
     return average_auroc
 
 
-# ADD THIS CORRECTED FUNCTION TO plasgraph/engine.py
-
-def tune_thresholds(accelerator, parameters, data, splits, labeled_indices, log_dir):
-    """
-    Performs a new K-fold cross-validation using the best hyperparameters
-    to determine the optimal classification thresholds.
-    This version is fully compatible with Accelerate.
-    """
-    accelerator.print("\n" + "="*60)
-    accelerator.print("🎯 Tuning Classification Thresholds via Cross-Validation")
-    accelerator.print("="*60)
-
-    # Move data to the correct device once
-    data = data.to(accelerator.device)
-    
-    fold_thresholds = {'plasmid': [], 'chromosome': []}
-
-    for fold_idx, (train_idx, val_idx) in enumerate(splits):
-        accelerator.print(f"\n--- Threshold Tuning: Fold {fold_idx + 1}/{len(splits)} ---")
-
-        # 1. Initialize Model for this fold
-        if parameters['model_type'] == 'GCNModel':
-            model = GCNModel(parameters)
-        elif parameters['model_type'] == 'GGNNModel':
-            model = GGNNModel(parameters)
-
-        optimizer = torch.optim.Adam(model.parameters(), lr=parameters['learning_rate'], weight_decay=parameters['l2_reg'])
-        # Corrected criterion definition
-        criterion = torch.nn.BCEWithLogitsLoss(reduction='none')
-
-        # Use Accelerate to prepare the model and optimizer
-        model, optimizer = accelerator.prepare(model, optimizer)
-
-        # 2. Create masks for this fold's train/val split on the correct device
-        train_fold_indices = labeled_indices[train_idx]
-        val_fold_indices = labeled_indices[val_idx]
-        masks_train = torch.zeros(data.num_nodes, dtype=torch.float32, device=accelerator.device)
-        masks_train[train_fold_indices] = 1.0
-        masks_validate = torch.zeros(data.num_nodes, dtype=torch.float32, device=accelerator.device)
-        masks_validate[val_fold_indices] = 1.0
-
-        # 3. Train the model on this fold's training data
-        best_val_loss_for_fold = float("inf")
-        patience_for_fold = 0
-        best_model_state_for_fold = None
-
-        for epoch in range(parameters["epochs"]): # Use full epochs for robust training
-            model.train()
-            optimizer.zero_grad()
-            outputs = model(data)
-
-            valid_label_mask = data.y.sum(dim=1) != 0
-            masked_weights_train = masks_train[valid_label_mask]
-            loss_per_node_train = criterion(outputs[valid_label_mask], data.y[valid_label_mask])
-            train_loss = (loss_per_node_train.sum(dim=1) * masked_weights_train).sum() / masked_weights_train.sum()
-
-            accelerator.backward(train_loss)
-            utils.fix_gradients(parameters, model)
-            optimizer.step()
-
-            # Validation for early stopping
-            model.eval()
-            with torch.no_grad():
-                val_outputs = model(data)
-                masked_weights_val = masks_validate[valid_label_mask]
-                loss_per_node_val = criterion(val_outputs[valid_label_mask], data.y[valid_label_mask])
-                val_loss = (loss_per_node_val.sum(dim=1) * masked_weights_val).sum() / masked_weights_val.sum()
-
-            if val_loss.item() < best_val_loss_for_fold:
-                best_val_loss_for_fold = val_loss.item()
-                # Unwrap the model before saving its state
-                unwrapped_model = accelerator.unwrap_model(model)
-                best_model_state_for_fold = unwrapped_model.state_dict()
-                patience_for_fold = 0
-            else:
-                patience_for_fold += 1
-                if patience_for_fold >= parameters["early_stopping_patience"]:
-                    accelerator.print(f"Stopping early at epoch {epoch+1}.")
-                    break
-        
-        # 4. Determine thresholds on this fold's validation data
-        accelerator.print(f"Loading best model for fold {fold_idx+1} to determine thresholds...")
-        # Create a new model instance for loading the state, as the original is wrapped by accelerate
-        if parameters['model_type'] == 'GCNModel':
-            inference_model = GCNModel(parameters).to(accelerator.device)
-        else:
-            inference_model = GGNNModel(parameters).to(accelerator.device)
-        inference_model.load_state_dict(best_model_state_for_fold)
-        
-        temp_params_for_fold = copy.deepcopy(parameters)
-
-        
-        fold_log_dir = os.path.join(log_dir, f"threshold_tuning_fold_{fold_idx+1}")
-        os.makedirs(fold_log_dir, exist_ok=True)
-        
-        utils.set_thresholds(inference_model, data, masks_validate, temp_params_for_fold, fold_log_dir) 
-        
-        p_thresh = temp_params_for_fold['plasmid_threshold']
-        c_thresh = temp_params_for_fold['chromosome_threshold']
-        accelerator.print(f"Fold {fold_idx+1} thresholds: Plasmid={p_thresh:.2f}, Chromosome={c_thresh:.2f}")
-        
-        fold_thresholds['plasmid'].append(p_thresh)
-        fold_thresholds['chromosome'].append(c_thresh)
-
-    # 5. Average the thresholds across all folds
-    avg_plasmid_thresh = float(np.mean(fold_thresholds['plasmid']))
-    avg_chromosome_thresh = float(np.mean(fold_thresholds['chromosome']))
-
-    accelerator.print("\n" + "="*60)
-    accelerator.print(f"✅ Average thresholds determined: Plasmid={avg_plasmid_thresh:.4f}, Chromosome={avg_chromosome_thresh:.4f}")
-    accelerator.print("="*60)
-    
-    return avg_plasmid_thresh, avg_chromosome_thresh
-
 
 def train_final_model(accelerator, parameters, data, splits, labeled_indices, log_dir, G, node_list):
     """
@@ -349,13 +236,44 @@ def train_final_model(accelerator, parameters, data, splits, labeled_indices, lo
         
         accelerator.print(f"Fold {fold_idx + 1} finished. Best epoch: {best_epoch_for_fold} with val loss: {best_val_loss_for_fold:.4f}")
 
-        # --- NEW: Save the best model state for this fold ---
         if best_model_state_for_fold:
             model_save_path = os.path.join(ensemble_models_dir, f"fold_{fold_idx + 1}_model.pt")
             accelerator.wait_for_everyone()
             if accelerator.is_main_process:
                 torch.save(best_model_state_for_fold, model_save_path)
             accelerator.print(f"  > Saved best model for fold {fold_idx + 1} to: {model_save_path}")
+
+        # --- NEW: Determine and save thresholds for this specific fold ---
+        accelerator.print(f"  > Determining thresholds for fold {fold_idx + 1}...")
+
+        # Create a new model instance for inference
+        if parameters['model_type'] == 'GCNModel':
+            inference_model = GCNModel(parameters).to(accelerator.device)
+        else:
+            inference_model = GGNNModel(parameters).to(accelerator.device)
+        inference_model.load_state_dict(best_model_state_for_fold)
+        inference_model.eval()
+
+        # Create a temporary config object to hold this fold's thresholds
+        fold_params = copy.deepcopy(parameters)
+        
+        # Find optimal thresholds using the validation mask for this fold
+        utils.set_thresholds(inference_model, data, masks_validate, fold_params) 
+        
+        p_thresh = fold_params['plasmid_threshold']
+        c_thresh = fold_params['chromosome_threshold']
+
+        # Save these specific thresholds to a file
+        if accelerator.is_main_process:
+            threshold_data = {
+                'plasmid_threshold': p_thresh,
+                'chromosome_threshold': c_thresh
+            }
+            threshold_save_path = os.path.join(ensemble_models_dir, f"fold_{fold_idx + 1}_thresholds.yaml")
+            with open(threshold_save_path, 'w') as f:
+                yaml.dump(threshold_data, f)
+
+        accelerator.print(f"  > Fold {fold_idx+1} thresholds (P:{p_thresh:.4f}, C:{c_thresh:.4f}) saved to: {threshold_save_path}")
 
         # Plotting for the current fold
         plt.figure(figsize=(10, 6))
@@ -374,26 +292,35 @@ def train_final_model(accelerator, parameters, data, splits, labeled_indices, lo
         # Evaluation for the current fold
         accelerator.print(f"\n--- Evaluating Fold {fold_idx + 1} Model on its Validation Set ---")
         if best_model_state_for_fold:
-            if parameters['model_type'] == 'GCNModel':
-                eval_model = GCNModel(parameters)
-            else:
-                eval_model = GGNNModel(parameters)
-            eval_model.load_state_dict(best_model_state_for_fold)
-            eval_model = accelerator.prepare(eval_model)
-            eval_model.eval()
+            # The 'inference_model' is already loaded with the best state and on the correct device
+            inference_model.eval()
 
             with torch.no_grad():
-                outputs = eval_model(data)
-                probs = torch.sigmoid(outputs)
-            
-            calculate_and_print_metrics(probs, data, masks_validate, G, node_list, parameters, verbose=False)
+                # Get raw probabilities
+                outputs = inference_model(data)
+                raw_probs_fold = torch.sigmoid(outputs)
+                
+                # Use the 'fold_params' which contain the just-calculated thresholds for this fold
+                final_scores_fold = torch.from_numpy(
+                    utils.apply_thresholds(raw_probs_fold.cpu().numpy(), fold_params)
+                ).to(accelerator.device)
+
+            calculate_and_print_metrics(
+                final_scores_fold,
+                raw_probs_fold,
+                data,
+                masks_validate,
+                G,
+                node_list,
+                verbose=False
+            )
         else:
             accelerator.print("No best model state found for this fold, skipping evaluation.")
 
     # The function now concludes after the loop, as there's no single final model to train.
     # Return None as the concept of a single "final model" no longer applies.
     accelerator.print("\n✅ Ensemble model training complete. Models for each fold saved.")
-    return None, parameters
+    return 
 
 
 

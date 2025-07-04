@@ -34,8 +34,7 @@ loss_function: crossentropy
 random_seed: 123
 # Plasmid and ambiguous contigs weight
 plasmid_ambiguous_weight: 1
-# The number of epochs when no improvement before early stopping happens
-early_stopping_patience: 100
+
 # Set threshold for plasmid and chromosome classification to optimize validation F1 score
 set_thresholds: true
 # Contigs shorter than this are deleted from the graph before prediction
@@ -46,10 +45,12 @@ gradient_clipping: 1
 edge_gate_hidden_dim: 32
 k_folds: 5
 
+# The number of epochs when no improvement before early stopping happens
+early_stopping_patience: 100
 
-optuna_n_trials: 50
+optuna_n_trials: 30
 epochs_trials: 400
-n_startup_trials: 30
+n_startup_trials: 5
 
 # epochs: 2000
 
@@ -58,7 +59,7 @@ scheduler_patience : 50
 early_stopping_patience_retrain : 200
 
 # Learning rate
-learning_rate: 0.005
+learning_rate: 0.001
 
 
 feature_generation_method: evo
