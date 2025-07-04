@@ -65,11 +65,14 @@ def main():
     pruner = optuna.pruners.MedianPruner(n_startup_trials=parameters['n_startup_trials'])
     study_name = "plasgraph-hpo-study"
     storage_name = f"sqlite:///{os.path.join(args.model_output_dir, 'hpo_study.db')}"
+    sampler = optuna.samplers.TPESampler(multivariate=True)
+
 
     study = optuna.create_study(
         study_name=study_name,
         storage=storage_name,
         direction="maximize",
+        sampler=sampler,
         pruner=pruner,
         load_if_exists=True
     )

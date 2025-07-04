@@ -27,14 +27,14 @@ def objective(trial, accelerator, parameters, data, splits, labeled_indices):
     """
     trial_params_dict = parameters._params.copy() 
 
-    trial_params_dict['l2_reg'] = trial.suggest_float("l2_reg", 1e-12, 1e-7, log=True)
-    trial_params_dict['n_channels'] = trial.suggest_int("n_channels", 16, 250, step=16)
-    trial_params_dict['n_gnn_layers'] = trial.suggest_int("n_gnn_layers", 6, 12)
-    trial_params_dict['dropout_rate'] = trial.suggest_float("dropout_rate", 0.0, 0.3)
-    trial_params_dict['gradient_clipping'] = trial.suggest_float("gradient_clipping", 0.0, 1.0)
-    trial_params_dict['edge_gate_hidden_dim'] = trial.suggest_int("edge_gate_hidden_dim", 8, 80, step=8)
-    trial_params_dict['n_channels_preproc'] = trial.suggest_int("n_channels_preproc", 10, 50, step=10)
-    trial_params_dict['edge_gate_depth'] = trial.suggest_int("edge_gate_depth", 3, 8)
+    trial_params_dict['l2_reg'] = trial.suggest_float("l2_reg", 1e-8, 1e-6, log=True)
+    trial_params_dict['n_channels'] = trial.suggest_int("n_channels", 210, 310, step=16)
+    trial_params_dict['n_gnn_layers'] = trial.suggest_int("n_gnn_layers", 8, 12)
+    trial_params_dict['dropout_rate'] = trial.suggest_float("dropout_rate", 0.1, 0.4)
+    trial_params_dict['gradient_clipping'] = trial.suggest_float("gradient_clipping", 0.0, 0.3)
+    trial_params_dict['edge_gate_hidden_dim'] = trial.suggest_int("edge_gate_hidden_dim", 64, 120, step=8)
+    trial_params_dict['n_channels_preproc'] = trial.suggest_int("n_channels_preproc", 20, 50, step=5)
+    trial_params_dict['edge_gate_depth'] = trial.suggest_int("edge_gate_depth", 2, 6)
     # trial_params_dict['learning_rate'] = trial.suggest_float("learning_rate", 1e-5, 1e-2, log=True)
 
     

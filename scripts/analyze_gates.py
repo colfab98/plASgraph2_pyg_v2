@@ -228,7 +228,7 @@ def main():
     print(f"📊 Analysis results will be saved to: {output_dir}")
 
     # --- Load Config and Data ---
-    config_path = os.path.join(args.model_dir, "final_model_config_with_thresholds.yaml")
+    config_path = os.path.join(args.model_dir, "base_model_config.yaml")
     parameters = Config(config_path)
     
     if parameters['model_type'] != 'GGNNModel':

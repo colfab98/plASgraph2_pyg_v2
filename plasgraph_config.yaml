@@ -46,20 +46,20 @@ edge_gate_hidden_dim: 32
 k_folds: 5
 
 # The number of epochs when no improvement before early stopping happens
-early_stopping_patience: 100
+early_stopping_patience: 50
 
-optuna_n_trials: 30
-epochs_trials: 400
-n_startup_trials: 5
+optuna_n_trials: 50
+epochs_trials: 350
+n_startup_trials: 20
 
 # epochs: 2000
 
-scheduler_factor : 0.5
-scheduler_patience : 50
-early_stopping_patience_retrain : 200
+# scheduler_factor : 0.5
+# scheduler_patience : 50
+early_stopping_patience_retrain : 50
 
 # Learning rate
-learning_rate: 0.001
+learning_rate: 0.005
 
 
 feature_generation_method: evo
