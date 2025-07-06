@@ -8,10 +8,9 @@ import optuna
 import torch
 from sklearn.model_selection import KFold
 
-# Import modules from our new library structure
 from plasgraph.data import Dataset_Pytorch
 from plasgraph.config import config as Config
-from plasgraph.engine import objective # <-- The core logic is now imported!
+from plasgraph.engine import objective
 
 import optuna.visualization as vis
 import matplotlib.pyplot as plt
@@ -42,7 +41,8 @@ def main():
         root=args.data_cache_dir,
         file_prefix=args.file_prefix,
         train_file_list=args.train_file_list,
-        parameters=parameters
+        parameters=parameters,
+        accelerator=accelerator
     )
     data = all_graphs[0]
     G = all_graphs.G
