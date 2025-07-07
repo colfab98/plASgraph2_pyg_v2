@@ -20,6 +20,11 @@ import matplotlib.pyplot as plt
 from .metrics import calculate_and_print_metrics
 import yaml
 
+# Add these imports at the top of plasgraph/engine.py
+from torch_geometric.loader import NeighborLoader
+from torch.profiler import profile, record_function, ProfilerActivity
+import torch.profiler
+
 
 def objective(trial, accelerator, parameters, data, splits, labeled_indices):
     """
@@ -35,7 +40,8 @@ def objective(trial, accelerator, parameters, data, splits, labeled_indices):
     trial_params_dict['edge_gate_hidden_dim'] = trial.suggest_int("edge_gate_hidden_dim", 64, 120, step=8)
     trial_params_dict['n_channels_preproc'] = trial.suggest_int("n_channels_preproc", 20, 50, step=5)
     trial_params_dict['edge_gate_depth'] = trial.suggest_int("edge_gate_depth", 2, 6)
-    # trial_params_dict['learning_rate'] = trial.suggest_float("learning_rate", 1e-5, 1e-2, log=True)
+    trial_params_dict['batch_size'] = trial.suggest_categorical('batch_size', [512, 1024, 2048])
+
 
     
     trial_config_obj = config.config(parameters.config_file_path)
@@ -53,95 +59,122 @@ def objective(trial, accelerator, parameters, data, splits, labeled_indices):
             model = GGNNModel(trial_config_obj)
 
         optimizer = torch.optim.Adam(model.parameters(), lr=trial_config_obj['learning_rate'], weight_decay=trial_config_obj['l2_reg'])
-        criterion = torch.nn.BCEWithLogitsLoss(reduction='none')
+        criterion = torch.nn.BCEWithLogitsLoss()
 
+        train_loader = NeighborLoader(
+            data,
+            input_nodes=torch.from_numpy(train_fold_indices).to(data.x.device),
+            num_neighbors=[-1], # Use all neighbors. Can be tuned e.g., [15, 10]
+            shuffle=True,
+            # Use the new tunable batch_size and num_workers from config
+            batch_size=trial_config_obj['batch_size'],
+            num_workers=trial_config_obj['num_workers'],
+            pin_memory=True,
+        )
 
-        model, optimizer = accelerator.prepare(model, optimizer)
+        val_loader = NeighborLoader(
+            data,
+            input_nodes=torch.from_numpy(val_fold_indices).to(data.x.device),
+            num_neighbors=[-1],
+            shuffle=False,
+            batch_size=trial_config_obj['batch_size'],
+            num_workers=trial_config_obj['num_workers'],
+            pin_memory=True,
+        )
 
-        train_fold_indices = labeled_indices[train_idx]
-        val_fold_indices = labeled_indices[val_idx]
+        model, optimizer, train_loader, val_loader = accelerator.prepare(
+        model, optimizer, train_loader, val_loader
+    )
 
-        masks_train = torch.zeros(data.num_nodes, dtype=torch.float32, device=accelerator.device)
-        masks_train[train_fold_indices] = 1.0 
-
-        masks_validate = torch.zeros(data.num_nodes, dtype=torch.float32, device=accelerator.device)
-        masks_validate[val_fold_indices] = 1.0
 
         best_val_loss_for_fold = float("inf")
         patience_for_fold = 0
 
         best_model_state_for_fold = None
 
+        # Define the profiler, we'll only run it for the first fold to avoid clutter
+        profiler = profile(
+            activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],
+            schedule=torch.profiler.schedule(wait=1, warmup=1, active=3, repeat=1),
+            on_trace_ready=torch.profiler.tensorboard_trace_handler(f'./logs/profile_fold_{fold_idx}'),
+            record_shapes=True,
+            profile_memory=True
+        ) if fold_idx == 0 else None
+
+        if profiler: profiler.start()
+
         
         for epoch in range(parameters["epochs_trials"]):
             model.train()
-            optimizer.zero_grad()
-            outputs = model(data) 
-            
-            valid_label_mask = data.y.sum(dim=1) != 0
-            masked_weights_train = masks_train[valid_label_mask]
-            
-            loss_per_node_train = criterion(outputs[valid_label_mask], data.y[valid_label_mask])
-            train_loss = (loss_per_node_train.sum(dim=1) * masked_weights_train).sum() / masked_weights_train.sum()
+            for batch in train_loader:
+                optimizer.zero_grad()
+                # The model now receives a mini-batch, not the full graph
+                outputs = model(batch)
+                # Loss is calculated on the output and labels of the mini-batch
+                loss = criterion(outputs, batch.y)
+                accelerator.backward(loss)
+                fix_gradients(trial_config_obj, model)
+                optimizer.step()
 
-            accelerator.backward(train_loss)
-            fix_gradients(trial_config_obj, model) 
-            optimizer.step()
-
+            # Validation loop
             model.eval()
+            total_val_loss = 0
             with torch.no_grad():
-                val_outputs = model(data)
-                masked_weights_val = masks_validate[valid_label_mask]
-                loss_per_node_val = criterion(val_outputs[valid_label_mask], data.y[valid_label_mask])
-                val_loss = (loss_per_node_val.sum(dim=1) * masked_weights_val).sum() / masked_weights_val.sum()
+                for batch in val_loader:
+                    outputs = model(batch)
+                    val_loss = criterion(outputs, batch.y)
+                    total_val_loss += val_loss.item()
+            
+            avg_val_loss = total_val_loss / len(val_loader)
 
-            if val_loss.item() < best_val_loss_for_fold:
-                best_val_loss_for_fold = val_loss.item()
+            if avg_val_loss < best_val_loss_for_fold:
+                best_val_loss_for_fold = avg_val_loss
                 patience_for_fold = 0
-                # ADDED: Save the best model state
                 unwrapped_model = accelerator.unwrap_model(model)
                 best_model_state_for_fold = copy.deepcopy(unwrapped_model.state_dict())
             else:
                 patience_for_fold += 1
                 if patience_for_fold >= parameters["early_stopping_patience"]:
                     break
-        
-        if best_model_state_for_fold:
-            # Create a new model instance for inference to avoid issues with the accelerator-wrapped model
-            if trial_config_obj['model_type'] == 'GCNModel':
-                inference_model = GCNModel(trial_config_obj)
-            else:
-                inference_model = GGNNModel(trial_config_obj)
             
+            if profiler: profiler.step()
+
+        if profiler:
+            profiler.stop()
+            if accelerator.is_main_process:
+                print("\n--- PyTorch Profiler Results (Fold 0) ---")
+                print(profiler.key_averages().table(sort_by="cuda_time_total", row_limit=15))
+                print(f"Trace saved to './logs/profile_fold_{fold_idx}'. Use Tensorboard to view.")
+
+        # --- Final evaluation for the fold ---
+        if best_model_state_for_fold:
+            inference_model = GCNModel(trial_config_obj) if trial_config_obj['model_type'] == 'GCNModel' else GGNNModel(trial_config_obj)
             inference_model.load_state_dict(best_model_state_for_fold)
-            inference_model = inference_model.to(accelerator.device)
+            inference_model = accelerator.prepare(inference_model)
             inference_model.eval()
 
+            all_probs, all_true = [], []
             with torch.no_grad():
-                # Get raw logits from the model
-                outputs = inference_model(data)
-                # Apply sigmoid to get probabilities
-                probs = torch.sigmoid(outputs)
-
-            y_true_fold = data.y[val_fold_indices].cpu().numpy()
-            y_probs_fold = probs[val_fold_indices].cpu().numpy()
+                for batch in val_loader:
+                    outputs = inference_model(batch)
+                    all_probs.append(torch.sigmoid(outputs))
+                    all_true.append(batch.y)
+            
+            y_probs_fold = torch.cat(all_probs).cpu().numpy()
+            y_true_fold = torch.cat(all_true).cpu().numpy()
 
             auroc_plasmid = 0.5
             auroc_chromosome = 0.5
-
-            # Calculate AUROC only if both classes are present in the true labels
             if len(np.unique(y_true_fold[:, 0])) > 1:
                 auroc_plasmid = roc_auc_score(y_true_fold[:, 0], y_probs_fold[:, 0])
             if len(np.unique(y_true_fold[:, 1])) > 1:
                 auroc_chromosome = roc_auc_score(y_true_fold[:, 1], y_probs_fold[:, 1])
 
-            # Use the average of plasmid and chromosome AUROC as the fold's score
             avg_auroc_for_fold = (auroc_plasmid + auroc_chromosome) / 2.0
             fold_aurocs.append(avg_auroc_for_fold)
         else:
-            # If no model was saved (e.g., training failed), append a score of 0
             fold_aurocs.append(0.0)
-        
+
         trial.report(np.median(fold_aurocs), fold_idx)
         if trial.should_prune():
             raise optuna.exceptions.TrialPruned()
