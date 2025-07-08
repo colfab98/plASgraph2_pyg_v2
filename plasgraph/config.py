@@ -42,7 +42,7 @@ PARAMS = [
     {'name': 'evo_model_name', 'type': str, 'default': 'nvidia/Evo-2-8B-base'},
     {'name': 'n_startup_trials', 'type': int, 'default': 20},
     {'name': 'edge_gate_depth', 'type': int, 'default': 1},
-    {'name': 'num_workers', 'type': int, 'default': 4},
+    {'name': 'num_workers', 'type': int, 'default': 12},
 
 ]
 

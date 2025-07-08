@@ -25,13 +25,16 @@ from torch_geometric.loader import NeighborLoader
 from torch.profiler import profile, record_function, ProfilerActivity
 import torch.profiler
 
+import torch.distributed as dist
 
-def objective(trial, accelerator, parameters, data, splits, labeled_indices):
+
+def objective(trial, parameters, data, splits, labeled_indices):
     """
     Optuna objective function with K-fold cross-validation.
     """
-    trial_params_dict = parameters._params.copy() 
+    trial.set_user_attr("pid", os.getpid())
 
+    trial_params_dict = parameters._params.copy()
     trial_params_dict['l2_reg'] = trial.suggest_float("l2_reg", 1e-8, 1e-6, log=True)
     trial_params_dict['n_channels'] = trial.suggest_int("n_channels", 210, 310, step=16)
     trial_params_dict['n_gnn_layers'] = trial.suggest_int("n_gnn_layers", 8, 12)
@@ -42,21 +45,24 @@ def objective(trial, accelerator, parameters, data, splits, labeled_indices):
     trial_params_dict['edge_gate_depth'] = trial.suggest_int("edge_gate_depth", 2, 6)
     trial_params_dict['batch_size'] = trial.suggest_categorical('batch_size', [512, 1024, 2048])
 
-
     
     trial_config_obj = config.config(parameters.config_file_path)
-    trial_config_obj._params = trial_params_dict 
+    trial_config_obj._params = trial_params_dict
 
-    data = data.to(accelerator.device)
+    device = accelerator.device
+    data = data.to(device)
 
     fold_aurocs = []
 
     for fold_idx, (train_idx, val_idx) in enumerate(splits):
+
+        train_fold_indices = labeled_indices[train_idx]
+        val_fold_indices = labeled_indices[val_idx]
         
         if trial_config_obj['model_type'] == 'GCNModel':
-            model = GCNModel(trial_config_obj)
+            model = GCNModel(trial_config_obj).to(device)
         elif trial_config_obj['model_type'] == 'GGNNModel':
-            model = GGNNModel(trial_config_obj)
+            model = GGNNModel(trial_config_obj).to(device)
 
         optimizer = torch.optim.Adam(model.parameters(), lr=trial_config_obj['learning_rate'], weight_decay=trial_config_obj['l2_reg'])
         criterion = torch.nn.BCEWithLogitsLoss()
@@ -82,37 +88,23 @@ def objective(trial, accelerator, parameters, data, splits, labeled_indices):
             pin_memory=True,
         )
 
-        model, optimizer, train_loader, val_loader = accelerator.prepare(
-        model, optimizer, train_loader, val_loader
-    )
-
 
         best_val_loss_for_fold = float("inf")
         patience_for_fold = 0
 
         best_model_state_for_fold = None
 
-        # Define the profiler, we'll only run it for the first fold to avoid clutter
-        profiler = profile(
-            activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],
-            schedule=torch.profiler.schedule(wait=1, warmup=1, active=3, repeat=1),
-            on_trace_ready=torch.profiler.tensorboard_trace_handler(f'./logs/profile_fold_{fold_idx}'),
-            record_shapes=True,
-            profile_memory=True
-        ) if fold_idx == 0 else None
-
-        if profiler: profiler.start()
-
         
         for epoch in range(parameters["epochs_trials"]):
             model.train()
             for batch in train_loader:
+                batch = batch.to(device) # Add this line
                 optimizer.zero_grad()
                 # The model now receives a mini-batch, not the full graph
                 outputs = model(batch)
                 # Loss is calculated on the output and labels of the mini-batch
                 loss = criterion(outputs, batch.y)
-                accelerator.backward(loss)
+                loss.backward()
                 fix_gradients(trial_config_obj, model)
                 optimizer.step()
 
@@ -121,6 +113,7 @@ def objective(trial, accelerator, parameters, data, splits, labeled_indices):
             total_val_loss = 0
             with torch.no_grad():
                 for batch in val_loader:
+                    batch = batch.to(device)
                     outputs = model(batch)
                     val_loss = criterion(outputs, batch.y)
                     total_val_loss += val_loss.item()
@@ -130,32 +123,24 @@ def objective(trial, accelerator, parameters, data, splits, labeled_indices):
             if avg_val_loss < best_val_loss_for_fold:
                 best_val_loss_for_fold = avg_val_loss
                 patience_for_fold = 0
-                unwrapped_model = accelerator.unwrap_model(model)
-                best_model_state_for_fold = copy.deepcopy(unwrapped_model.state_dict())
+                best_model_state_for_fold = copy.deepcopy(model.state_dict())
             else:
                 patience_for_fold += 1
                 if patience_for_fold >= parameters["early_stopping_patience"]:
                     break
             
-            if profiler: profiler.step()
-
-        if profiler:
-            profiler.stop()
-            if accelerator.is_main_process:
-                print("\n--- PyTorch Profiler Results (Fold 0) ---")
-                print(profiler.key_averages().table(sort_by="cuda_time_total", row_limit=15))
-                print(f"Trace saved to './logs/profile_fold_{fold_idx}'. Use Tensorboard to view.")
 
         # --- Final evaluation for the fold ---
-        if best_model_state_for_fold:
-            inference_model = GCNModel(trial_config_obj) if trial_config_obj['model_type'] == 'GCNModel' else GGNNModel(trial_config_obj)
-            inference_model.load_state_dict(best_model_state_for_fold)
-            inference_model = accelerator.prepare(inference_model)
-            inference_model.eval()
+        if trial_config_obj['model_type'] == 'GCNModel':
+            inference_model = GCNModel(trial_config_obj).to(device)
+        else:
+            inference_model = GGNNModel(trial_config_obj).to(device)
+        inference_model.load_state_dict(best_model_state_for_fold)
 
             all_probs, all_true = [], []
             with torch.no_grad():
                 for batch in val_loader:
+                    batch = batch.to(device) 
                     outputs = inference_model(batch)
                     all_probs.append(torch.sigmoid(outputs))
                     all_true.append(batch.y)

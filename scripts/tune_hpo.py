@@ -76,10 +76,20 @@ def main():
         pruner=pruner,
         load_if_exists=True
     )
+    # Calculate the number of trials for this specific process
+    total_trials = parameters["optuna_n_trials"]
+    n_trials_per_process = total_trials // accelerator.num_processes
+    
+    # Ensure the total number of trials is still met if it's not perfectly divisible
+    if accelerator.is_main_process:
+        n_trials_per_process += total_trials % accelerator.num_processes
+
+    accelerator.print(f"Process {accelerator.process_index} will run {n_trials_per_process} trials.")
+
     study.optimize(
         lambda trial: objective(trial, accelerator, parameters, data, splits, labeled_indices),
-        n_trials=parameters["optuna_n_trials"],
-        show_progress_bar=True
+        n_trials=n_trials_per_process,
+        show_progress_bar=accelerator.is_main_process # Only show progress on the main process
     )
 
     # 5. Save Results (only on the main process)

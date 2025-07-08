@@ -302,20 +302,23 @@ class Dataset_Pytorch(InMemoryDataset):
             edge_list = list(self.G.edges())
             # Data to be broadcasted to all processes
             emb_shape = all_embeddings_tensor.shape
-            objects_to_broadcast = [node_to_idx, edge_list] # 2 items
+            # Add emb_shape to the list of objects to broadcast
+            objects_to_broadcast = [node_to_idx, edge_list, emb_shape]
             self.accelerator.print(f"Broadcasting node map and {len(edge_list)} edges for parallel processing.")
         else:
-            # This is the corrected line
-            objects_to_broadcast = [None, None] # Should be 2 items to match the main process
+            # Add a placeholder for emb_shape
+            objects_to_broadcast = [None, None, None]
 
-        # Broadcast Python objects (map and list)
+        # Broadcast Python objects (map, list, and shape)
         dist.broadcast_object_list(objects_to_broadcast, src=0)
-        node_to_idx, edge_list = objects_to_broadcast
+        # Unpack the received objects on all processes
+        node_to_idx, edge_list, emb_shape = objects_to_broadcast
 
         # Broadcast the embeddings tensor
         if self.accelerator.is_main_process:
             embeddings_to_broadcast = all_embeddings_tensor.contiguous()
         else:
+            # Now, this line will work correctly on all processes
             embeddings_to_broadcast = torch.empty(emb_shape, dtype=torch.float32, device=self.accelerator.device)
 
         dist.broadcast(embeddings_to_broadcast, src=0)
