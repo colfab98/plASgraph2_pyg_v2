@@ -1,13 +1,31 @@
-numpy==2.2.5
-pandas==2.2.3
-torch==2.7.0
-torch-geometric==2.6.1
-scikit-learn==1.6.1
-networkx==3.4.2
-optuna==4.3.0
-matplotlib==3.10.3
-seaborn==0.13.2
-PyYAML==6.0.2
-biopython==1.85
-plotly
-kaleido
+# Adds the PyTorch download source for CUDA-compatible wheels
+--extra-index-url https://download.pytorch.org/whl/cu121
+
+# Specifies the download source for PyG libraries
+--find-links https://data.pyg.org/whl/torch-2.3.1+cu121.html
+
+# PyTorch Stack
+torch==2.3.1
+torchvision==0.18.1
+torchaudio==2.3.1
+
+# PyG Stack & Other Dependencies
+torch-scatter
+torch-sparse
+torch-cluster
+torch-spline-conv
+torch-geometric
+pyg-lib
+numpy
+pandas
+scikit-learn
+matplotlib
+seaborn
+networkx
+tqdm
+pyyaml
+biopython
+transformers==4.39.3
+accelerate
+optuna
+optuna-dashboard

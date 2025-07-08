@@ -28,7 +28,7 @@ import torch.profiler
 import torch.distributed as dist
 
 
-def objective(trial, parameters, data, splits, labeled_indices):
+def objective(trial, accelerator, parameters, data, splits, labeled_indices):
     """
     Optuna objective function with K-fold cross-validation.
     """
@@ -131,12 +131,19 @@ def objective(trial, parameters, data, splits, labeled_indices):
             
 
         # --- Final evaluation for the fold ---
-        if trial_config_obj['model_type'] == 'GCNModel':
-            inference_model = GCNModel(trial_config_obj).to(device)
-        else:
-            inference_model = GGNNModel(trial_config_obj).to(device)
-        inference_model.load_state_dict(best_model_state_for_fold)
+        # Only proceed if a model was successfully saved during training
+        if best_model_state_for_fold is not None:
+            # 1. Initialize a new model for inference
+            if trial_config_obj['model_type'] == 'GCNModel':
+                inference_model = GCNModel(trial_config_obj).to(device)
+            else:
+                inference_model = GGNNModel(trial_config_obj).to(device)
+            
+            # 2. Load the best state from training
+            inference_model.load_state_dict(best_model_state_for_fold)
+            inference_model.eval() # Set model to evaluation mode
 
+            # 3. Get predictions on the validation set
             all_probs, all_true = [], []
             with torch.no_grad():
                 for batch in val_loader:
@@ -148,6 +155,7 @@ def objective(trial, parameters, data, splits, labeled_indices):
             y_probs_fold = torch.cat(all_probs).cpu().numpy()
             y_true_fold = torch.cat(all_true).cpu().numpy()
 
+            # 4. Calculate AUROC
             auroc_plasmid = 0.5
             auroc_chromosome = 0.5
             if len(np.unique(y_true_fold[:, 0])) > 1:
@@ -158,14 +166,19 @@ def objective(trial, parameters, data, splits, labeled_indices):
             avg_auroc_for_fold = (auroc_plasmid + auroc_chromosome) / 2.0
             fold_aurocs.append(avg_auroc_for_fold)
         else:
+            # If no model was saved (e.g., training was unstable), report a score of 0
             fold_aurocs.append(0.0)
 
+        # Report the result of this fold to Optuna for pruning decisions
+        # This is outside the if/else, but inside the loop for the fold
         trial.report(np.median(fold_aurocs), fold_idx)
         if trial.should_prune():
             raise optuna.exceptions.TrialPruned()
 
+        # The loop continues to the next fold...
+
+    # After all folds are complete:
     average_auroc = np.median(fold_aurocs)
-    
     return average_auroc
 
 

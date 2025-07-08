@@ -68,14 +68,27 @@ def main():
     sampler = optuna.samplers.TPESampler(multivariate=True)
 
 
-    study = optuna.create_study(
+    if accelerator.is_main_process:
+        accelerator.print(f"Main process creating/loading Optuna study '{study_name}'...")
+        # The main process is responsible for creating the study database
+        optuna.create_study(
+            study_name=study_name,
+            storage=storage_name,
+            direction="maximize",
+            sampler=sampler,
+            pruner=pruner,
+            load_if_exists=True  # Good practice to allow resuming a previous study
+        )
+
+    # Wait for the main process to finish creating the database and tables
+    accelerator.wait_for_everyone()
+
+    # All processes can now safely load the study, which is guaranteed to exist
+    study = optuna.load_study(
         study_name=study_name,
-        storage=storage_name,
-        direction="maximize",
-        sampler=sampler,
-        pruner=pruner,
-        load_if_exists=True
+        storage=storage_name
     )
+    accelerator.print(f"Process {accelerator.process_index} loaded study with {len(study.trials)} trials.")
     # Calculate the number of trials for this specific process
     total_trials = parameters["optuna_n_trials"]
     n_trials_per_process = total_trials // accelerator.num_processes

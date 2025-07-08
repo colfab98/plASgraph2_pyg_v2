@@ -19,6 +19,7 @@ conda activate plasgraph
 
 
 
+
 Optuna:
 
 mkdir -p output
@@ -43,7 +44,7 @@ PYTHONUNBUFFERED=1 accelerate launch --num_processes=1 -m --mixed_precision=fp16
     > output/hpo.log 2> output/hpo.err
 
 
-optuna-dashboard sqlite:///plASgraph2_pyg_v2/output/ESKAPEE_hpo_study/hpo_study.db
+optuna-dashboard sqlite:///output/ESKAPEE_hpo_study/hpo_study.db
 
 
 

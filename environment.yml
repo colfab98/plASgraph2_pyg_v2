@@ -1,36 +1,8 @@
 name: plasgraph
 channels:
   - conda-forge
-
 dependencies:
-  # Core scientific computing and utilities
   - python=3.10
-  - numpy
-  - pandas
-  - scikit-learn
-  - matplotlib
-  - seaborn
-  - networkx
-  - tqdm
-  - pyyaml
-  - biopython
-
-  # The pip section is crucial for installing a compatible PyTorch stack
   - pip
   - pip:
-    # This line tells pip where to find compatible torch & pyg libraries
-    - --find-links https://data.pyg.org/whl/torch-2.3.0+cu121.html
-    
-    # Installs a matched set of PyTorch, PyG, and their dependencies
-    - torch==2.3.0
-    - torch-scatter
-    - torch-sparse
-    - torch-cluster
-    - torch-spline-conv
-    - torch-geometric
-    - pyg-lib
-    
-    # Other project dependencies
-    - transformers
-    - accelerate
-    - optuna
+      - -r requirements.txt
