@@ -302,10 +302,11 @@ class Dataset_Pytorch(InMemoryDataset):
             edge_list = list(self.G.edges())
             # Data to be broadcasted to all processes
             emb_shape = all_embeddings_tensor.shape
-            objects_to_broadcast = [node_to_idx, edge_list]
+            objects_to_broadcast = [node_to_idx, edge_list] # 2 items
             self.accelerator.print(f"Broadcasting node map and {len(edge_list)} edges for parallel processing.")
         else:
-            objects_to_broadcast = [None, None, None]
+            # This is the corrected line
+            objects_to_broadcast = [None, None] # Should be 2 items to match the main process
 
         # Broadcast Python objects (map and list)
         dist.broadcast_object_list(objects_to_broadcast, src=0)
