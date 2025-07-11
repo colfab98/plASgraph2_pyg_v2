@@ -1,73 +1,44 @@
-## plASgraph2 configuration file
-
-## Learning features
-
-
-## Architecture parameters
-# Number of GNN layers
-n_gnn_layers: 6
-# Number of channels in GNN layers
-n_channels: 32
-# Number of channels out of preprocessing
-n_channels_preproc: 10
-# Tie GNN layers variables
-tie_gnn_layers: true
-
-## Activation functions
-# Preprocessing layer activation
-preproc_activation: sigmoid
-# Fully connected layers activation
-fully_connected_activation: relu
-# GCN layers activation
-gcn_activation: relu
-# Output layer activation (typically sigmoid, none for squaredhinge activation)
-output_activation: none
-
-## Miscellaneous parameters
-# GCN L2 regularization penalty
-l2_reg: 2.5e-4
-# Dropout rate
-dropout_rate: 0.1
-# Training loss function squaredhinge / crossentropy / mse
-loss_function: crossentropy
-# Random seed
-random_seed: 123
-# Plasmid and ambiguous contigs weight
-plasmid_ambiguous_weight: 1
-
-# Set threshold for plasmid and chromosome classification to optimize validation F1 score
-set_thresholds: true
-# Contigs shorter than this are deleted from the graph before prediction
+# Data and Feature Parameters
+features: coverage_norm,gc_norm,kmer_dot,degree,length_norm,loglength
+n_input_features: 6
+n_labels: 2
 minimum_contig_length: 100
+feature_generation_method: evo
+evo_model_name: zhihan1996/DNABERT-2-117M
+num_workers: 12
 
+# Model Architecture Parameters
 model_type: GGNNModel
-gradient_clipping: 1
+n_gnn_layers: 6
+n_channels_preproc: 10
+n_channels: 32
+preproc_activation: sigmoid
+gcn_activation: relu
+fully_connected_activation: relu
+output_activation: none
+tie_gnn_layers: true
 edge_gate_hidden_dim: 32
-k_folds: 5
+edge_gate_depth: 3
 
-# The number of epochs when no improvement before early stopping happens
+# Training and Optimization Parameters
+learning_rate: 0.005
+epochs: 1000
+loss_function: crossentropy
+plasmid_ambiguous_weight: 1
+dropout_rate: 0.1
+l2_reg: 2.5e-4
+gradient_clipping: 1
 early_stopping_patience: 50
+early_stopping_patience_retrain : 50
+scheduler_patience : 50
+scheduler_factor : 0.5
+random_seed: 123
 
+# HPO and Evaluation Parameters
+k_folds: 5
 optuna_n_trials: 50
 epochs_trials: 350
 n_startup_trials: 20
-
-# epochs: 2000
-
-# scheduler_factor : 0.5
-# scheduler_patience : 50
-early_stopping_patience_retrain : 50
-
-# Learning rate
-learning_rate: 0.005
-
-
-feature_generation_method: evo
-evo_model_name: zhihan1996/DNABERT-2-117M
-
-
-features: coverage_norm,gc_norm,kmer_dot,degree,length_norm,loglength
-# features: coverage_norm,gc_norm,degree,length_norm
-
-
-n_input_features: 6
+set_thresholds: true
+plasmid_threshold: 0.5
+chromosome_threshold: 0.5

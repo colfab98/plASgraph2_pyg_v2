@@ -31,18 +31,23 @@ def main():
     parser.add_argument("--data_cache_dir", required=True, help="Directory to store/load the processed graph data.")
     args = parser.parse_args()
 
+    # automatically detects hardware setup (single GPU, multiple GPUs, TPUs, etc.) and prepares 
+    # PyTorch training components (model, optimizer, data loaders) to run seamlessly in that environment
     accelerator = Accelerator()
 
-    # 1. Load Config and Data
+    # creates the main configuration object for the script by reading a user-provided YAML file (plasgraph_config.yaml)
     parameters = Config(args.config_file)
+    # attach the path of the loaded configuration file to the parameters object itself
     parameters.config_file_path = args.config_file
 
+    # instantiates the custom Dataset_Pytorch class from data.py
+    # uses a caching mechanism: if a pre-processed graph exists in 'root' it loads it
     all_graphs = Dataset_Pytorch(
-        root=args.data_cache_dir,
-        file_prefix=args.file_prefix,
-        train_file_list=args.train_file_list,
-        parameters=parameters,
-        accelerator=accelerator
+        root=args.data_cache_dir,               # directory for caching the processed dataset
+        file_prefix=args.file_prefix,           # path prefix for raw data files
+        train_file_list=args.train_file_list,   # CSV listing the graphs to load
+        parameters=parameters,                  # main configuration object
+        accelerator=accelerator                 # accelerator for distributed processing
     )
     data = all_graphs[0]
     G = all_graphs.G

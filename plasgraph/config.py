@@ -3,51 +3,64 @@ import yaml
 DEFAULT_FILENAME = "plasgraph_config.yaml"
 
 PARAMS = [
-    {'name': 'n_gnn_layers', 'type': int, 'default': 5},
-    {'name': 'n_channels', 'type': int, 'default': 32},
-    {'name': 'n_channels_preproc', 'type': int, 'default': 10},
-    {'name': 'tie_gnn_layers', 'type': bool, 'default': True},
-    {'name': 'preproc_activation', 'type': str, 'default': 'sigmoid'},
-    {'name': 'gcn_activation', 'type': str, 'default': 'relu'},
-    {'name': 'fully_connected_activation', 'type': str, 'default': 'relu'},
-    {'name': 'output_activation', 'type': str, 'default': 'none'},
-    {'name': 'dropout_rate', 'type': float, 'default': 0.1},
-    {'name': 'loss_function', 'type': str, 'default': 'crossentropy'},
-    {'name': 'l2_reg', 'type': float, 'default': 2.5e-4},
-    {'name': 'features', 'type': str,
-        'default': 'coverage_norm,gc_norm,kmer_dot,degree,length_norm,loglength'},
-    {'name': 'n_input_features', 'type': int, 'default': 6},
-    {'name': 'n_labels', 'type': int, 'default': 2},
-    {'name': 'random_seed', 'type': int, 'default': 123},
-    {'name': 'plasmid_ambiguous_weight', 'type': float, 'default': 1.0},
-    {'name': 'learning_rate', 'type': float, 'default': 0.05},
-    {'name': 'epochs', 'type': int, 'default': 1500},
-    {'name': 'epochs_trials', 'type': int, 'default': 100},
-    {'name': 'early_stopping_patience', 'type': int, 'default': 100},
-    {'name': 'set_thresholds', 'type': bool, 'default': False},
-    {'name': 'plasmid_threshold', 'type': float, 'default': 0.5},
-    {'name': 'chromosome_threshold', 'type': float, 'default': 0.5},
-    {'name': 'minimum_contig_length', 'type': int, 'default': 100},
-    {'name': 'model_type', 'type': str, 'default': 'GGNNModel'},
-    {'name': 'gradient_clipping', 'type': float, 'default': 0.0},
-    {'name': 'edge_gate_hidden_dim', 'type': int, 'default': 32},
-    {'name': 'k_folds', 'type': int, 'default': 5},
-    {'name': 'optuna_n_trials', 'type': int, 'default': 50},
-    # {'name': 'lrs_to_test_retrain', 'type': list, 'default': [0.0001, 0.0005, 0.001, 0.005]},
-    {'name': 'early_stopping_patience_retrain', 'type': int, 'default': 100},
-    {'name': 'scheduler_factor', 'type': float, 'default': 0.1},
-    {'name': 'scheduler_patience', 'type': int, 'default': 10},
+    # Data and Feature Parameters
 
-    {'name': 'feature_generation_method', 'type': str, 'default': 'evo'}, # Can be 'kmer' or 'evo'
-    {'name': 'evo_model_name', 'type': str, 'default': 'nvidia/Evo-2-8B-base'},
-    {'name': 'n_startup_trials', 'type': int, 'default': 20},
-    {'name': 'edge_gate_depth', 'type': int, 'default': 1},
-    {'name': 'num_workers', 'type': int, 'default': 12},
+    {'name': 'features', 'type': str, 'default': 'coverage_norm,gc_norm,kmer_dot,degree,length_norm,loglength'}, # comma-separated string defining the node features to use from the graph data
+    {'name': 'n_input_features', 'type': int, 'default': 6}, # total number of input node features, which must match the count in 'features'
+    {'name': 'n_labels', 'type': int, 'default': 2}, # number of output classes for the classification task (e.g., 2 for plasmid/chromosome)
+    {'name': 'minimum_contig_length', 'type': int, 'default': 100}, # shortest a contig can be to be included in the graph; shorter ones are removed
+    {'name': 'feature_generation_method', 'type': str, 'default': 'evo'}, # method for generating sequence features; can be 'evo' for a Transformer model or 'kmer'
+    {'name': 'evo_model_name', 'type': str, 'default': 'nvidia/Evo-2-8B-base'}, # specific name of the pre-trained Evo model to use if 'feature_generation_method' is 'evo'
+    {'name': 'num_workers', 'type': int, 'default': 12}, # number of CPU worker processes to use for loading data in parallel
 
-]
+    # Model Architecture Parameters
+
+    {'name': 'model_type', 'type': str, 'default': 'GGNNModel'}, # type of GNN architecture to use
+    {'name': 'n_gnn_layers', 'type': int, 'default': 5}, # number of message-passing layers in the GNN
+    {'name': 'n_channels_preproc', 'type': int, 'default': 10}, # feature dimension after the initial input preprocessing layer
+    {'name': 'n_channels', 'type': int, 'default': 32}, # dimension of the hidden states within the main GNN layers
+    {'name': 'preproc_activation', 'type': str, 'default': 'sigmoid'}, # activation function for the preprocessing layer
+    {'name': 'gcn_activation', 'type': str, 'default': 'relu'}, # activation function used within the main GNN layers
+    {'name': 'fully_connected_activation', 'type': str, 'default': 'relu'}, # activation function for the final dense layers before the output
+    {'name': 'output_activation', 'type': str, 'default': 'none'}, # activation for the final output layer; 'none' is used to get raw logits for loss calculation
+    {'name': 'tie_gnn_layers', 'type': bool, 'default': True}, # boolean that, if True, makes all GNN layers share the same weights
+    {'name': 'edge_gate_hidden_dim', 'type': int, 'default': 32}, # for GGNNModel, this sets the hidden dimension of the neural network that computes edge weights
+    {'name': 'edge_gate_depth', 'type': int, 'default': 3}, # for GGNNModel, this sets the number of layers in the edge gating network.
+
+    # Training and Optimization Parameters
+
+    {'name': 'learning_rate', 'type': float, 'default': 0.05}, # initial learning rate for the optimizer
+    {'name': 'epochs', 'type': int, 'default': 1500}, # maximum number of training epochs for the final model training run
+    {'name': 'loss_function', 'type': str, 'default': 'crossentropy'}, # loss function to use for training
+    {'name': 'plasmid_ambiguous_weight', 'type': float, 'default': 1.0}, # weight applied to "ambiguous" labels during loss calculation
+    {'name': 'dropout_rate', 'type': float, 'default': 0.1}, # probability of dropout for regularization in the neural network layers
+    {'name': 'l2_reg', 'type': float, 'default': 2.5e-4}, # strength of L2 weight decay regularization applied by the optimizer
+    {'name': 'gradient_clipping', 'type': float, 'default': 0.0}, # maximum value to clip gradients to, which prevents exploding gradients; 0.0 disables it
+    {'name': 'early_stopping_patience', 'type': int, 'default': 100}, # number of epochs to wait for validation loss to improve before stopping HPO trials
+    {'name': 'early_stopping_patience_retrain', 'type': int, 'default': 100}, # patience for early stopping during the final model training run
+    {'name': 'scheduler_patience', 'type': int, 'default': 10}, # number of epochs the learning rate scheduler will wait for improvement before reducing the LR
+    {'name': 'scheduler_factor', 'type': float, 'default': 0.1}, # factor by which the learning rate is multiplied when the scheduler triggers
+    {'name': 'random_seed', 'type': int, 'default': 123}, # random number generators to ensure run-to-run reproducibility
+
+    # HPO and Evaluation Parameters
+
+    {'name': 'k_folds', 'type': int, 'default': 5}, # number of folds to use for cross-validation during HPO and final training
+    {'name': 'optuna_n_trials', 'type': int, 'default': 50}, # total number of HPO trials to run with Optuna
+    {'name': 'epochs_trials', 'type': int, 'default': 100}, # maximum number of epochs to train for during a single HPO trial
+    {'name': 'n_startup_trials', 'type': int, 'default': 20}, # number of initial HPO trials to run before the pruner can start stopping unpromising trials
+    {'name': 'set_thresholds', 'type': bool, 'default': False}, # if True, enables the automatic determination of optimal classification thresholds
+    {'name': 'plasmid_threshold', 'type': float, 'default': 0.5}, # classification probability threshold for a contig to be called a plasmid
+    {'name': 'chromosome_threshold', 'type': float, 'default': 0.5}, # classification probability threshold for a contig to be called a chromosome
+
+    ]
 
 
 class config:
+    """
+    A configuration class to manage all hyperparameters and settings for the project.
+    It loads default parameters and can override them with values from a YAML file.
+    """
+
     def __init__(
         self,
         yaml_file=None
