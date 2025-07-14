@@ -1,11 +1,11 @@
 #!/bin/bash
-#SBATCH --job-name=train
+#SBATCH --job-name=train-single
 #SBATCH --nodes=1
-#SBATCH --ntasks-per-node=4
-#SBATCH --gpus=4
+#SBATCH --ntasks-per-node=1  # A single task
+#SBATCH --gpus-per-task=1    # Request one GPU for the task
 #SBATCH --time=04:00:00
 
-PYTHONUNBUFFERED=1 accelerate launch --num_processes=1 --mixed_precision=fp16 -m scripts.train \
+PYTHONUNBUFFERED=1 python -m scripts.train \
     --data_cache_dir cache/eskapee-train/ \
     plasgraph_config.yaml \
     output/ESKAPEE_hpo_study/best_arch_params.yaml \

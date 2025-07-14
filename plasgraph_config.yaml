@@ -5,7 +5,7 @@ n_labels: 2
 minimum_contig_length: 100
 feature_generation_method: evo
 evo_model_name: zhihan1996/DNABERT-2-117M
-num_workers: 12
+num_workers: 16  
 
 # Model Architecture Parameters
 model_type: GGNNModel

@@ -204,7 +204,29 @@ def set_thresholds(model, data, masks_validate, parameters, log_dir=None):
         chromosome_scores = score_thresholds(y_true_chromosome, y_probs_chromosome, sample_weight_chromosome)
         store_best(chromosome_scores, parameters, 'chromosome_threshold', log_dir)
 
+def set_thresholds_from_predictions(y_true, y_probs, parameters, log_dir=None):
+    """
+    Sets optimal thresholds by maximizing F1 score based on pre-computed
+    true labels and predicted probabilities from a validation set.
+    """
+    # --- Process Plasmid ---
+    y_true_plasmid = y_true[:, 0].cpu().numpy()
+    y_probs_plasmid = y_probs[:, 0].cpu().numpy()
+    # Assume all provided validation nodes have equal weight of 1.0
+    sample_weight_plasmid = np.ones_like(y_true_plasmid)
 
+    # Calculate F1 scores for all possible thresholds
+    plasmid_scores = score_thresholds(y_true_plasmid, y_probs_plasmid, sample_weight_plasmid)
+    # Find the best threshold and store it in the parameters object
+    store_best(plasmid_scores, parameters, 'plasmid_threshold', log_dir)
+
+    # --- Process Chromosome ---
+    y_true_chromosome = y_true[:, 1].cpu().numpy()
+    y_probs_chromosome = y_probs[:, 1].cpu().numpy()
+    sample_weight_chromosome = np.ones_like(y_true_chromosome)
+
+    chromosome_scores = score_thresholds(y_true_chromosome, y_probs_chromosome, sample_weight_chromosome)
+    store_best(chromosome_scores, parameters, 'chromosome_threshold', log_dir)
 
 def apply_thresholds(y, parameters):
     """Apply thresholds during testing, return transformed scores so that 0.5 corresponds to threshold"""
