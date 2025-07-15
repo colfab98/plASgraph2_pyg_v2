@@ -41,7 +41,8 @@ PARAMS = [
     {'name': 'scheduler_patience', 'type': int, 'default': 10}, # number of epochs the learning rate scheduler will wait for improvement before reducing the LR
     {'name': 'scheduler_factor', 'type': float, 'default': 0.1}, # factor by which the learning rate is multiplied when the scheduler triggers
     {'name': 'random_seed', 'type': int, 'default': 123}, # random number generators to ensure run-to-run reproducibility
-
+    {'name': 'batch_size', 'type': int, 'default': 64}, # number of graphs to process in a single batch during training
+    
     # HPO and Evaluation Parameters
 
     {'name': 'k_folds', 'type': int, 'default': 5}, # number of folds to use for cross-validation during HPO and final training

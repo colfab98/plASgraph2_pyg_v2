@@ -29,3 +29,5 @@ transformers==4.39.3
 accelerate
 optuna
 optuna-dashboard
+certifi
+Pillow
