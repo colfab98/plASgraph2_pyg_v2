@@ -4,9 +4,21 @@ import seaborn as sns
 import matplotlib.pyplot as plt
 import os
 import numpy as np
+import torch.nn.functional as F 
 
 
 def fix_gradients(config_params, model: torch.nn.Module): 
+    """
+    Stabilizes training by handling non-finite gradients and applying gradient clipping.
+
+    This function performs two main operations:
+    1. It iterates through all model parameters and replaces any `NaN`
+       or `inf` values in the gradients with 0.0. This prevents
+       optimizer errors during unstable training phases.
+    2. It applies gradient clipping by value, which clamps the gradients to a specified
+       range to prevent the "exploding gradients" problem.
+    """
+
     for param in model.parameters():
         if param.grad is not None:
             if torch.isnan(param.grad.data).any() or torch.isinf(param.grad.data).any():
@@ -17,39 +29,46 @@ def fix_gradients(config_params, model: torch.nn.Module):
 
 
 def get_gradient_magnitudes(model: torch.nn.Module):
+     """
+    Calculates and groups the magnitudes of gradients for each layer in a model.
+
+    This function is a diagnostic tool used to monitor the health of the training
+    process. It iterates through all model parameters that have gradients, calculates
+    the absolute value of each gradient, and groups these magnitudes by the layer
+    they belong to. This is useful for identifying potential issues like vanishing
+    or exploding gradients in specific parts of the network.
+    """
+
     grad_magnitudes_by_layer = {}
     for name, param in model.named_parameters():
         if param.grad is not None:
-            # We want to group by layer, so let's try to infer the layer name.
-            # This is a heuristic and might need adjustment based on model structure.
-            # Example: 'preproc.weight', 'fc_input_1.weight', 'gcn_layers.0.weight'
             parts = name.split('.')
             if len(parts) > 1:
                 layer_name_candidate = parts[0]
                 if parts[0] == 'gcn_layers' or parts[0] == 'dense_layers':
-                    # For ModuleList, include the index to distinguish layers
                     layer_name_candidate = f"{parts[0]}.{parts[1]}"
                 elif parts[0] == 'final_fc1' or parts[0] == 'final_fc2':
-                    layer_name_candidate = parts[0] # Group final FC layers separately
+                    layer_name_candidate = parts[0]
                 else:
-                    # For single layers like preproc, fc_input_1 etc.
                     layer_name_candidate = parts[0]
             else:
-                layer_name_candidate = name # Should not happen often for complex models
+                layer_name_candidate = name 
 
-            # Flatten the gradient tensor and get absolute values
             magnitudes = param.grad.abs().flatten().cpu().numpy()
             grad_magnitudes_by_layer.setdefault(layer_name_candidate, []).extend(magnitudes)
     return grad_magnitudes_by_layer
 
 def plot_gradient_magnitudes(grad_data, epoch, log_dir, plot_frequency=10):
+    """
+    Generates and saves a violin plot of gradient magnitudes grouped by layer.
+    """
+
     if epoch % plot_frequency != 0:
         return
 
-    if not grad_data: # No gradients collected
+    if not grad_data: 
         return
 
-    # Prepare data for plotting: list of (layer_name, magnitude) pairs
     plot_df_data = []
     for layer, magnitudes in grad_data.items():
         for mag in magnitudes:
@@ -59,18 +78,12 @@ def plot_gradient_magnitudes(grad_data, epoch, log_dir, plot_frequency=10):
         return
 
     plot_df = pd.DataFrame(plot_df_data)
-
-    # Sort layers for consistent plotting order
-    # You might want a custom sorting order here to reflect network flow
     unique_layers = sorted(plot_df['Layer'].unique())
     plot_df['Layer'] = pd.Categorical(plot_df['Layer'], categories=unique_layers, ordered=True)
     plot_df = plot_df.sort_values('Layer')
 
-
     plt.figure(figsize=(15, 8))
     sns.violinplot(x='Layer', y='Gradient Magnitude', data=plot_df, inner='quartile', palette='viridis')
-    
-    # Only set the y-axis to log scale if there are positive gradients to plot
     if plot_df['Gradient Magnitude'].max() > 0:
         plt.yscale('log')
 
@@ -79,20 +92,19 @@ def plot_gradient_magnitudes(grad_data, epoch, log_dir, plot_frequency=10):
     plt.ylabel('Log Gradient Magnitude')
     plt.xticks(rotation=45, ha='right')
     plt.tight_layout()
-
     plot_path = os.path.join(log_dir, f"gradient_magnitudes_epoch_{epoch}.png")
     plt.savefig(plot_path)
     plt.close()
 
 
-
 def plot_f1_violin(plasmid_scores, chromosome_scores, output_dir):
-    """Generates and saves a violin plot of F1 scores."""
+    """
+    Generates and saves a violin plot of F1 scores.
+    """
+
     plt.figure(figsize=(10, 7))
     data_to_plot = [plasmid_scores, chromosome_scores]
     labels = ['Plasmid F1 Scores', 'Chromosome F1 Scores']
-    
-    # --- (Paste the entire matplotlib plotting block here) ---
     parts = plt.violinplot(data_to_plot, showmeans=False, showmedians=True, showextrema=True)
     for i, pc in enumerate(parts['bodies']):
                 pc.set_facecolor('skyblue' if labels[i].startswith('Plasmid') else 'lightcoral')
@@ -107,10 +119,10 @@ def plot_f1_violin(plasmid_scores, chromosome_scores, output_dir):
     parts['cmedians'].set_linewidth(1.5)
     for i, d_list in enumerate(data_to_plot): 
             x_jitter = np.random.normal(loc=i + 1, scale=0.04, size=len(d_list))
-            plt.scatter(x_jitter, d_list, alpha=0.4, s=20, color='dimgray', zorder=3) # zorder to plot dots on top
+            plt.scatter(x_jitter, d_list, alpha=0.4, s=20, color='dimgray', zorder=3) 
     plt.ylabel('F1 Score', fontsize=14)
     plt.title('Distribution of F1 Scores Across Samples', fontsize=16)
-    plt.xticks(np.arange(1, len(labels) + 1), labels, rotation=0, ha='center', fontsize=12) # Use np.arange
+    plt.xticks(np.arange(1, len(labels) + 1), labels, rotation=0, ha='center', fontsize=12) 
     plt.yticks(fontsize=10)
     plt.grid(True, linestyle='--', alpha=0.6, axis='y')
     
@@ -121,21 +133,6 @@ def plot_f1_violin(plasmid_scores, chromosome_scores, output_dir):
     print(f"\n✅ Evaluation plot saved to: {plot_path}")
 
 
-
-"""Module for changing setting optimal threshold wrt F1 measure on validation set 
-and applying them to new data"""
-
-import numpy as np
-
-import os
-# import architecture
-
-# ... (imports remain the same) ...
-import torch # Add torch import
-import torch.nn.functional as F # Add F if you need to manually apply sigmoid/softmax if model output is logits
-
-# Note: The provided `architecture.py` now applies `self.output_activation` in `forward`.
-# So, `model(graph)` will return probabilities directly.
 
 def set_thresholds(model, data, masks_validate, parameters, log_dir=None):
     """Set optimal thresholds (plasmid, chromosome) by maximizing F1 on validation set,
@@ -149,45 +146,14 @@ def set_thresholds(model, data, masks_validate, parameters, log_dir=None):
     data = data.to(device)
 
     with torch.no_grad():
-        # Get raw predictions/probabilities from the model for the entire graph
-        # model.forward() now applies the output activation, so `outputs` are already probabilities
         outputs = torch.sigmoid(model(data))
 
-        
-        # Extract true labels for validation nodes
-        # Use data.y for true labels and masks_validate for selection
-        
-        # --- Process Plasmid ---
-        # Select only validation set nodes for plasmid output
         labels_plasmid_val = data.y[masks_validate.bool(), 0]
         probs_plasmid_val = outputs[masks_validate.bool(), 0]
 
-        # In your train9.py, `valid_eval_mask_plasmid = labels_plasmid_val_masked != -1` was used.
-        # This typically means labels could be -1 (e.g., ignored or missing).
-        # Assuming `data.y` is clean (0/1/other numerical labels), and `masks_validate` already
-        # handles the train/val split (0 for train, >0 for val), then you just need to
-        # filter out labels that are specifically meant to be ignored from F1 calculation.
-        # If your labels are always 0 or 1 for actual classes, and 0 for unlabeled, and 1,1 for ambiguous,
-        # then you primarily care about samples where the label is 0 or 1 for the *specific class*.
-        # The `masks_validate` array should handle the actual samples to consider.
-        
-        # Filter for actual 0/1 true labels where relevant (excluding [0,0] from being target 0/1)
-        # This part depends on how you want to treat the 0,0 labels (unlabeled) in F1 score.
-        # If the `masks_validate` already sets their weight to 0, then `score_thresholds` should handle it.
-        # The `score_thresholds` in `thresholds.py` explicitly uses `if weights[i] > 0:`
-        # So, we just need to pass the y_true and y_pred for all relevant nodes from the validation set
-        # with their corresponding masks_validate.
-        
-        # Convert to numpy arrays for sklearn's f1_score
         y_true_plasmid = labels_plasmid_val.cpu().numpy()
         y_probs_plasmid = probs_plasmid_val.cpu().numpy()
         sample_weight_plasmid = masks_validate[masks_validate.bool()].cpu().numpy() # weights for validation nodes
-
-        # Call score_thresholds which is designed to work with y_true (0/1), y_pred (float), and weights
-        # Note: score_thresholds in the original thresholds.py computes F1 iteratively.
-        # It's not sklearn.f1_score. We need to check if it already uses sample_weight.
-        # Checking thresholds.py: score_thresholds takes y_true, y_pred, weights and filters `if weights[i] > 0`
-        # and then counts tp based on `if pairs[i][0] > 0.5`. This is compatible.
         
         plasmid_scores = score_thresholds(y_true_plasmid, y_probs_plasmid, sample_weight_plasmid)
         store_best(plasmid_scores, parameters, 'plasmid_threshold', log_dir)
