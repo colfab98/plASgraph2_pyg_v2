@@ -1,26 +1,22 @@
-
-import torch 
-from torch_geometric.data import Data, InMemoryDataset
-import numpy as np
-import pandas as pd
-import networkx as nx
-import itertools
 import fileinput
+import itertools
 import math
 import re
 import subprocess
 
-from transformers import AutoModel, AutoTokenizer, BertModel
+from accelerate import Accelerator
+import networkx as nx
+import numpy as np
+import pandas as pd
+import torch 
+import torch.distributed as dist
 from torch.nn.functional import cosine_similarity
+from torch.utils.data import DataLoader, Dataset
+from torch_geometric.data import Data, InMemoryDataset
+from tqdm import tqdm
+from transformers import AutoModel, AutoTokenizer, BertModel
 
 from . import utils
-
-from accelerate import Accelerator
-import torch.distributed as dist
-from tqdm import tqdm
-
-from torch.utils.data import DataLoader, Dataset
-
 
 
 class EdgeDataset(Dataset):
@@ -67,56 +63,59 @@ class EvoFeatureGenerator:
     def __init__(self, model_name, accelerator: Accelerator):
         print(f"Initializing EvoFeatureGenerator with model: {model_name} on device: {accelerator.device}")
         self.accelerator = accelerator
+        # load the tokenizer specific to the chosen Evo model from Hugging Face
         self.tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
-        # Using AutoModel to get hidden states without the language modeling head
+        # load the base Evo model (BertModel) to get the raw hidden states
         self.model = BertModel.from_pretrained(model_name, trust_remote_code=True)
+        # get the size of the embeddings
         self.embedding_dim = self.model.config.hidden_size
-
+        # prepare the model for the appropriate device (CPU/GPU) using the Accelerator
         self.model = self.accelerator.prepare(self.model)
-
+        # set the model to evaluation mode to disable dropout and other training-specific layers
         self.model.eval()
 
     @torch.no_grad()
     def get_embedding(self, dna_sequence):
         """Generates an embedding for a single DNA sequence, handling long sequences by chunking."""
+        # if the input sequence is empty, return a zero vector of the correct embedding dimension
         if not dna_sequence:
             return torch.zeros(self.embedding_dim, device=self.accelerator.device)
-
-        # --- FIX: Process long sequences in chunks ---
-        
-        # Tokenize the entire sequence once
-        token_ids = self.tokenizer.encode(dna_sequence, add_special_tokens=False)
-        
-        # If the sequence is short enough, process it in one go
-        max_length = 510 # Use 510 to leave space for [CLS] and [SEP] tokens
+        # tokenize the entire DNA sequence into a list of token IDs
+        token_ids = self.tokenizer.encode(dna_sequence, add_special_tokens=False)      
+        # set the maximum number of tokens the model can handle at once, leaving space for [CLS] and [SEP]
+        max_length = 510 
         if len(token_ids) <= max_length:
+            # use the tokenizer to prepare the full input with special tokens and return PyTorch tensors
             inputs = self.tokenizer(dna_sequence, return_tensors="pt")
-            # Move inputs to the correct device
+            # move inputs to the correct device
             inputs = {k: v.to(self.accelerator.device) for k, v in inputs.items()}
+            # pass the inputs to the model
             outputs = self.model(**inputs)
-            # Return a GPU tensor, not a numpy array
+            # calculate the final embedding by taking the mean of the last hidden state across all tokens and remove the batch dimension
             return outputs.last_hidden_state.mean(dim=1).squeeze()
 
-        # For long sequences, process in chunks and average the results
+        # for long sequences, process in chunks and average the results
         chunk_embeddings = []
+        # iterate over the token IDs in steps of `max_length`
         for i in range(0, len(token_ids), max_length):
+            # extract the current chunk of token IDs
             chunk = token_ids[i:i + max_length]
-
-            # Use the correct variable 'chunk' and move tensors to the correct device
+            # manually create the input tensor for the chunk, adding the CLS and SEP token IDs
             input_ids = torch.tensor([self.tokenizer.cls_token_id] + chunk + [self.tokenizer.sep_token_id]).unsqueeze(0)
+            # create an attention mask of all ones, as we want to attend to all tokens in the chunk
             attention_mask = torch.ones_like(input_ids)
 
-            # Pass tensors to the model on the correct device
+            # pass tensors to the model on the correct device
             outputs = self.model(
                 input_ids=input_ids.to(self.accelerator.device),
                 attention_mask=attention_mask.to(self.accelerator.device)
             )
             
-            # Get the mean embedding for this chunk and store it
+            # calculate the mean embedding for this chunk
             chunk_embedding = outputs.last_hidden_state.mean(dim=1).squeeze()
             chunk_embeddings.append(chunk_embedding)
 
-        # Average the embeddings of all chunks to get the final representation
+        # average the embeddings of all chunks by stacking them into a tensor and taking the mean along the new dimension
         final_embedding = torch.stack(chunk_embeddings).mean(dim=0)
         return final_embedding
     
@@ -124,21 +123,23 @@ class EvoFeatureGenerator:
     def get_embeddings_batch(self, sequences: list[str]):
         """
         Generates embeddings for a BATCH of DNA sequences.
-        Short sequences are batched in mini-batches. Long sequences are processed individually.
+        Short sequences are batched together, while long sequences are chunked and processed efficiently.
         """
         max_length = 510
+        # to store the final embeddings, ensuring the order is preserved
         results = [None] * len(sequences)
-        
+        # lists to hold the indices and content of short and long sequences
         short_sequences_indices = []
         short_sequences_list = []
         long_sequences_indices = []
 
-        # First, classify sequences as short or long based on token length
+        # first, classify all sequences as short or long based on their tokenized length
         for i, seq in enumerate(sequences):
+            # handle empty sequences
             if not seq:
                 results[i] = torch.zeros(self.embedding_dim, dtype=torch.float32, device=self.accelerator.device)
                 continue
-            
+            # tokenize the sequence to find its length
             token_ids = self.tokenizer.encode(seq, add_special_tokens=False)
             if len(token_ids) <= max_length:
                 short_sequences_indices.append(i)
@@ -146,24 +147,27 @@ class EvoFeatureGenerator:
             else:
                 long_sequences_indices.append(i)
 
+        # --- process all short sequences in batches ---
         if short_sequences_list:
+            # define a mini-batch size for processing the short sequences
             mini_batch_size = 128
-            
+            # PyTorch Dataset to wrap the short sequences and their original indices
             short_seq_dataset = SequenceDataset(short_sequences_list, short_sequences_indices)
+            # DataLoader to handle batching of the short sequences
             data_loader = DataLoader(
                 short_seq_dataset,
                 batch_size=mini_batch_size,
-                shuffle=False,  # No need to shuffle, just processing
-                collate_fn=sequence_collate_fn
+                shuffle=False,  
+                # use a custom collate function to handle sequences and indices
+                collate_fn=sequence_collate_fn 
             )
 
-            
-            # Wrap the iterator with tqdm, which will only display on the main process
             progress_bar = tqdm(data_loader, 
                                 desc="  > Processing Short Sequences", 
                                 disable=not self.accelerator.is_main_process)
-            
+            # iterate over the mini-batches of short sequences
             for batch_sequences, batch_indices in progress_bar:
+                # tokenize the entire batch at once, with padding and truncation
                 inputs = self.tokenizer(
                     batch_sequences, 
                     return_tensors="pt", 
@@ -171,65 +175,69 @@ class EvoFeatureGenerator:
                     truncation=True, 
                     max_length=512
                 )
+                # move the tokenized batch to the correct GPU/CPU
                 inputs = {k: v.to(self.accelerator.device) for k, v in inputs.items()}
-                
+                # run the model on the batch
                 outputs = self.model(**inputs)
+                # calculate the mean embedding for every sequence in the batch
                 short_embeddings = outputs.last_hidden_state.mean(dim=1)
                 
-                # Place results in their original positions
+                # place each resulting embedding into the main `results` list at its correct original position
                 for j, original_index in enumerate(batch_indices):
                     results[original_index] = short_embeddings[j]
                 
-        # ADD THIS BLOCK IN ITS PLACE
+        # --- process all long sequences by chunking and batching the chunks ---
         if long_sequences_indices:
             all_chunk_strings = []
             all_chunk_origins = [] # Tracks which original sequence each chunk belongs to
 
-            # 1. Deconstruct all long sequences into a single list of string chunks
+            # deconstruct all long sequences into a single flat list of string chunks
             for original_idx in long_sequences_indices:
                 sequence = sequences[original_idx]
+                # tokenize the long sequence
                 token_ids = self.tokenizer.encode(sequence, add_special_tokens=False)
+                # iterate through the token IDs in chunks
                 for i in range(0, len(token_ids), max_length):
                     chunk_token_ids = token_ids[i:i + max_length]
-                    # Decode back to a string so the tokenizer can handle batch padding
+                    # decode the token chunk back to a string so the tokenizer can handle batch padding
                     chunk_string = self.tokenizer.decode(chunk_token_ids)
                     all_chunk_strings.append(chunk_string)
                     all_chunk_origins.append(original_idx)
 
-            # A dictionary to gather the chunk embeddings for each original sequence
+            # dictionary to gather the embeddings for all chunks belonging to the same original sequence
             results_by_origin = {idx: [] for idx in long_sequences_indices}
 
-            # 2. Use a DataLoader to create large batches of these chunks
-            # We can reuse the SequenceDataset and collate_fn for this
+            # DataLoader to create large batches of these chunks for efficient processing
             chunk_dataset = SequenceDataset(all_chunk_strings, all_chunk_origins)
-            # Use a larger batch size for chunks as they are smaller
+            # use a larger batch size for chunks as they are uniformly sized and smaller
             chunk_loader = DataLoader(chunk_dataset, batch_size=256, collate_fn=sequence_collate_fn)
 
             progress_bar = tqdm(chunk_loader,
                                 desc="  > Processing Long Sequence Chunks",
                                 disable=not self.accelerator.is_main_process)
 
-            # 3. Process the large batches of chunks on the GPU
+            # process the large batches of chunks on the GPU
             for chunk_strings_batch, origin_indices_batch in progress_bar:
                 inputs = self.tokenizer(chunk_strings_batch, return_tensors="pt", padding=True)
                 inputs = {k: v.to(self.accelerator.device) for k, v in inputs.items()}
                 outputs = self.model(**inputs)
                 chunk_embeddings = outputs.last_hidden_state.mean(dim=1)
 
-                # Gather the results
+                # gather the results, appending each chunk's embedding to the list for its original sequence
                 for i, origin_idx in enumerate(origin_indices_batch):
                     results_by_origin[origin_idx].append(chunk_embeddings[i])
 
-            # 4. Average the chunk embeddings for each original sequence
+            # average the chunk embeddings for each original sequence to get the final embedding
             for original_idx, gathered_chunks in results_by_origin.items():
                 if gathered_chunks:
                     final_embedding = torch.stack(gathered_chunks).mean(dim=0)
                     results[original_idx] = final_embedding
 
+        # final check for any sequences that might not have been processed
         for i, res in enumerate(results):
             if res is None:
                  results[i] = torch.zeros(self.embedding_dim, dtype=torch.float32, device=self.accelerator.device)
-                 
+        # stack the list of individual tensors into a single batch tensor for the final output       
         final_embeddings = torch.stack(results)
         return final_embeddings
     
@@ -259,18 +267,18 @@ class Dataset_Pytorch(InMemoryDataset):
         if self.accelerator.is_main_process:
             print("Main process: Reading raw graph files to generate sequence list...")
 
-            # Read all specified graph files (GFAs) and combine them into a single NetworkX graph object
+            # read all specified graph files (GFAs) and combine them into a single NetworkX graph object
             self.G = read_graph_set(self.file_prefix, self.train_file_list, self.parameters['minimum_contig_length'], self.accelerator)
             self.node_list = list(self.G)
             
-            # This is the data all other processes need
+            # data all other processes need
             all_sequences = [self.G.nodes[node_id].get("sequence", "") for node_id in self.node_list]
             
-            # We put the list into a container to broadcast it
+            # put the list into a container to broadcast it
             objects_to_broadcast = [all_sequences]
             print(f"Main process: Broadcasting {len(all_sequences)} sequences to other processes...")
         else:
-            # Other processes prepare an empty container to receive the data
+            # other processes prepare an empty container to receive the data
             objects_to_broadcast = [None]
 
         # broadcast the data from the main process to all others 
@@ -374,7 +382,7 @@ class Dataset_Pytorch(InMemoryDataset):
                     similarities = cosine_similarity(emb_u_batch, emb_v_batch)
                     local_similarities.extend(similarities.cpu().tolist())
 
-        # Gather results from all processes
+        # gather results from all processes
         gathered_sims_nested = [None] * self.accelerator.num_processes
         dist.all_gather_object(gathered_sims_nested, local_similarities)
         

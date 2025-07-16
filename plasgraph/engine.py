@@ -35,13 +35,13 @@ def objective(trial, accelerator, parameters, data, splits, labeled_indices):
     trial.set_user_attr("pid", os.getpid())
 
     trial_params_dict = parameters._params.copy()
-    trial_params_dict['l2_reg'] = trial.suggest_float("l2_reg", 1e-6, 1e-2, log=True)
-    trial_params_dict['n_channels'] = trial.suggest_int("n_channels", 16, 128, step=16)
+    # trial_params_dict['l2_reg'] = trial.suggest_float("l2_reg", 1e-6, 1e-2, log=True)
+    trial_params_dict['n_channels'] = trial.suggest_int("n_channels", 16, 64, step=16)
     trial_params_dict['n_gnn_layers'] = trial.suggest_int("n_gnn_layers", 4, 8)
-    trial_params_dict['dropout_rate'] = trial.suggest_float("dropout_rate", 0.0, 0.3)
+    # trial_params_dict['dropout_rate'] = trial.suggest_float("dropout_rate", 0.0, 0.3)
     trial_params_dict['gradient_clipping'] = trial.suggest_float("gradient_clipping", 0.0, 0.3)
     trial_params_dict['edge_gate_hidden_dim'] = trial.suggest_int("edge_gate_hidden_dim", 16, 64, step=8)
-    trial_params_dict['n_channels_preproc'] = trial.suggest_int("n_channels_preproc", 5, 20, step=5)
+    trial_params_dict['n_channels_preproc'] = trial.suggest_int("n_channels_preproc", 5, 15, step=5)
     trial_params_dict['edge_gate_depth'] = trial.suggest_int("edge_gate_depth", 2, 6)
     trial_params_dict['batch_size'] = trial.suggest_categorical('batch_size', [2048, 4096, 8192])
 
