@@ -33,6 +33,7 @@ early_stopping_patience_retrain : 50
 scheduler_patience : 50
 scheduler_factor : 0.5
 random_seed: 123
+batch_size: 2048
 
 # HPO and Evaluation Parameters
 k_folds: 5

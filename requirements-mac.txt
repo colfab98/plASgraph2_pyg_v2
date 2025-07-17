@@ -1,0 +1,27 @@
+# PyTorch Stack
+torch==2.3.1
+torchvision==0.18.1
+torchaudio==2.3.1
+
+# PyG Stack & Other Dependencies
+torch-scatter
+torch-sparse
+torch-cluster
+torch-spline-conv
+torch-geometric
+pyg-lib
+numpy
+pandas
+scikit-learn
+matplotlib
+seaborn
+networkx
+tqdm
+pyyaml
+biopython
+transformers==4.39.3
+accelerate
+optuna
+optuna-dashboard
+certifi
+Pillow

@@ -207,7 +207,12 @@ def train_final_model(parameters, data, splits, labeled_indices, log_dir, G, nod
     print("="*60)
 
     # determine the device
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    if torch.cuda.is_available():
+        device = torch.device("cuda")
+    elif torch.backends.mps.is_available():
+        device = torch.device("mps")
+    else:
+        device = torch.device("cpu")
     print(f"Using device: {device}")
     data = data.to(device)
 
@@ -240,13 +245,22 @@ def train_final_model(parameters, data, splits, labeled_indices, log_dir, G, nod
         optimizer = optim.Adam(model.parameters(), lr=parameters['learning_rate'], weight_decay=parameters['l2_reg'])
         criterion = torch.nn.BCEWithLogitsLoss()
 
+        # on MPS, move data to CPU for the loader. On CUDA, this does nothing
+        data = data.to('cpu') if device.type == 'mps' else data
+
+        # If on Mac/MPS, disable multiprocessing in DataLoader to prevent crash.
+        # On HPC (CUDA), the original num_workers from config will be used.
+        num_workers = parameters['num_workers']
+        if device.type == 'mps':
+            num_workers = 0
+
         train_loader = NeighborLoader(
             data,
             input_nodes=torch.from_numpy(train_fold_indices).to(device),
             num_neighbors=neighbors_list,
             shuffle=True,
             batch_size=parameters['batch_size'],
-            num_workers=parameters['num_workers'],
+            num_workers=num_workers,
             pin_memory=True,
         )
 
@@ -256,7 +270,7 @@ def train_final_model(parameters, data, splits, labeled_indices, log_dir, G, nod
             num_neighbors=neighbors_list,
             shuffle=False,
             batch_size=parameters['batch_size'],
-            num_workers=parameters['num_workers'],
+            num_workers=num_workers,
             pin_memory=True,
         )
 
