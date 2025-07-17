@@ -28,7 +28,7 @@ plasmid_ambiguous_weight: 1
 dropout_rate: 0.1
 l2_reg: 2.5e-4
 gradient_clipping: 1
-early_stopping_patience: 50
+early_stopping_patience: 100
 early_stopping_patience_retrain : 50
 scheduler_patience : 50
 scheduler_factor : 0.5

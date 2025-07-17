@@ -1,5 +1,3 @@
-# In scripts/tune_hpo.py
-
 import argparse
 import os
 import yaml
@@ -49,92 +47,105 @@ def main():
         parameters=parameters,                  # main configuration object
         accelerator=accelerator                 # accelerator for distributed processing
     )
+
+    # get the first (and only) item, which is the combined Data object
     data = all_graphs[0]
+    # underlying NetworkX graph object
     G = all_graphs.G
+    # ordered list of node IDs
     node_list = all_graphs.node_list
 
+    # update the configuration with the actual number of node features from the processed data
     parameters['n_input_features'] = data.num_node_features
 
+    # output directory
     os.makedirs(args.model_output_dir, exist_ok=True)
 
-    # 2. Setup for Cross-Validation
+    # --- setup for cross-validation ---
+    # create a numpy array of node indices that have labels (are not 'unlabeled')
     labeled_indices = np.array([i for i, node_id in enumerate(node_list) if G.nodes[node_id]["text_label"] != "unlabeled"])
     kf = KFold(n_splits=parameters["k_folds"], shuffle=True, random_state=parameters["random_seed"])
+    # generate the train/validation index splits for the labeled nodes
     splits = list(kf.split(labeled_indices))
 
-    # 3. Setup Device
     accelerator.print(f"Using device: {accelerator.device}")
 
-
-    # 4. Run Optuna Study
+    # --- run optuna study ---
+    # pruner to stop unpromising trials early
     pruner = optuna.pruners.MedianPruner(n_startup_trials=parameters['n_startup_trials'])
     study_name = "plasgraph-hpo-study"
+    # storage location for the study database (using SQLite)
     storage_name = f"sqlite:///{os.path.join(args.model_output_dir, 'hpo_study.db')}"
+    # configure the sampler, which suggests hyperparameter values
     sampler = optuna.samplers.TPESampler(multivariate=True)
 
-
+    # check if this is the main process (in a multi-GPU setup, process_index 0)
     if accelerator.is_main_process:
         accelerator.print(f"Main process creating/loading Optuna study '{study_name}'...")
-        # The main process is responsible for creating the study database
+        # the main process creates the study and the corresponding database file
         optuna.create_study(
             study_name=study_name,
             storage=storage_name,
-            direction="maximize",
+            direction="maximize",   # maximize the objective (AUROC)
             sampler=sampler,
             pruner=pruner,
-            load_if_exists=True  # Good practice to allow resuming a previous study
+            load_if_exists=True  # allows resuming the study if the database file already exists
         )
 
-    # Wait for the main process to finish creating the database and tables
+    # synchronize all processes to ensure the main process has finished creating the study database
     accelerator.wait_for_everyone()
 
-    # All processes can now safely load the study, which is guaranteed to exist
+    # all processes can safely load the study from the shared database file
     study = optuna.load_study(
         study_name=study_name,
         storage=storage_name
     )
     accelerator.print(f"Process {accelerator.process_index} loaded study with {len(study.trials)} trials.")
-    # Calculate the number of trials for this specific process
     total_trials = parameters["optuna_n_trials"]
     n_trials_per_process = total_trials // accelerator.num_processes
     
-    # Ensure the total number of trials is still met if it's not perfectly divisible
+    # if the total number of trials is not perfectly divisible by the number of processes,
+    # assign the remaining trials to the main process
     if accelerator.is_main_process:
         n_trials_per_process += total_trials % accelerator.num_processes
 
     accelerator.print(f"Process {accelerator.process_index} will run {n_trials_per_process} trials.")
 
+    # start the optimization process
     study.optimize(
         lambda trial: objective(trial, accelerator, parameters, data, splits, labeled_indices),
         n_trials=n_trials_per_process,
-        show_progress_bar=accelerator.is_main_process # Only show progress on the main process
+        show_progress_bar=accelerator.is_main_process
     )
 
-    # 5. Save Results (only on the main process)
+    # save results (only on the main process) ---
     if accelerator.is_main_process:
         accelerator.print("\nOptuna study finished.")
+        # retrieve the best trial from the study
         best_trial = study.best_trial
         accelerator.print(f"  Value (Best Avg AUROC): {best_trial.value:.4f}")
 
         best_arch_params = parameters._params.copy()
+        # update the copy with the hyperparameters from the best trial
         best_arch_params.update(study.best_params)
 
+        # handle the 'features' parameter, which is a tuple, to be saved as a comma-separated string in YAML
         if 'features' in best_arch_params and isinstance(best_arch_params['features'], tuple):
             best_arch_params['features'] = ",".join(best_arch_params['features'])
 
         best_params_path = os.path.join(args.model_output_dir, "best_arch_params.yaml")
+        # write the best hyperparameters to the YAML file
         with open(best_params_path, 'w') as f:
             yaml.dump(best_arch_params, f, sort_keys=False)
-        accelerator.print(f"\n✅ Best architecture parameters saved to: {best_params_path}")
+        accelerator.print(f"\nBest architecture parameters saved to: {best_params_path}")
 
-
-        # 6. Generate and save visualizations
+        # --- generate and save visualizations ---
         print("Generating Optuna visualizations (matplotlib backend)...")
         optuna_viz_dir = os.path.join(args.model_output_dir, "optuna_visualizations")
         os.makedirs(optuna_viz_dir, exist_ok=True)
 
         try:
-            # Optimization history
+            # optimization history
             ax = plot_optimization_history(study)
             fig = ax.get_figure()
             fig.set_size_inches(8, 6)
@@ -142,8 +153,7 @@ def main():
             fig.savefig(os.path.join(optuna_viz_dir, "optimization_history.png"))
             plt.close(fig)
 
-
-            # Parameter importances
+            # parameter importances
             ax = plot_param_importances(study)
             fig = ax.get_figure()
             fig.set_size_inches(8, 6)
@@ -151,20 +161,19 @@ def main():
             fig.savefig(os.path.join(optuna_viz_dir, "param_importances.png"))
             plt.close(fig)
 
-            # Parallel coordinates
+            # parallel coordinates
             ax = plot_parallel_coordinate(study)
             fig = ax.get_figure()
-            ax.grid(False)  # <--- turn off the grid
+            ax.grid(False)  
             fig.set_size_inches(10, 6)
             fig.tight_layout()
             fig.savefig(os.path.join(optuna_viz_dir, "parallel_coordinate.png"))
             plt.close(fig)
 
-            print(f"✅ Visualizations saved to: {optuna_viz_dir}")
+            print(f"Visualizations saved to: {optuna_viz_dir}")
 
         except Exception as e:
-            print(f"⚠️ Could not generate all Optuna visualizations: {e}")
-
+            print(f"Could not generate all Optuna visualizations: {e}")
 
 
 if __name__ == "__main__":

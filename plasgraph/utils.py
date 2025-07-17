@@ -29,7 +29,7 @@ def fix_gradients(config_params, model: torch.nn.Module):
 
 
 def get_gradient_magnitudes(model: torch.nn.Module):
-     """
+    """
     Calculates and groups the magnitudes of gradients for each layer in a model.
 
     This function is a diagnostic tool used to monitor the health of the training
@@ -65,18 +65,14 @@ def plot_gradient_magnitudes(grad_data, epoch, log_dir, plot_frequency=10):
 
     if epoch % plot_frequency != 0:
         return
-
     if not grad_data: 
         return
-
     plot_df_data = []
     for layer, magnitudes in grad_data.items():
         for mag in magnitudes:
             plot_df_data.append({'Layer': layer, 'Gradient Magnitude': mag})
-
     if not plot_df_data:
         return
-
     plot_df = pd.DataFrame(plot_df_data)
     unique_layers = sorted(plot_df['Layer'].unique())
     plot_df['Layer'] = pd.Categorical(plot_df['Layer'], categories=unique_layers, ordered=True)
@@ -134,59 +130,63 @@ def plot_f1_violin(plasmid_scores, chromosome_scores, output_dir):
 
 
 
-def set_thresholds(model, data, masks_validate, parameters, log_dir=None):
-    """Set optimal thresholds (plasmid, chromosome) by maximizing F1 on validation set,
-    and store them in the parameters object. This version works with PyTorch models/data."""
+# def set_thresholds(model, data, masks_validate, parameters, log_dir=None):
+#     """Set optimal thresholds (plasmid, chromosome) by maximizing F1 on validation set,
+#     and store them in the parameters object. This version works with PyTorch models/data."""
 
-    # Ensure model is in evaluation mode
-    model.eval()
+#     # Ensure model is in evaluation mode
+#     model.eval()
     
-    # Move data to model's device (if not already there)
-    device = next(model.parameters()).device
-    data = data.to(device)
+#     # Move data to model's device (if not already there)
+#     device = next(model.parameters()).device
+#     data = data.to(device)
 
-    with torch.no_grad():
-        outputs = torch.sigmoid(model(data))
+#     with torch.no_grad():
+#         outputs = torch.sigmoid(model(data))
 
-        labels_plasmid_val = data.y[masks_validate.bool(), 0]
-        probs_plasmid_val = outputs[masks_validate.bool(), 0]
+#         labels_plasmid_val = data.y[masks_validate.bool(), 0]
+#         probs_plasmid_val = outputs[masks_validate.bool(), 0]
 
-        y_true_plasmid = labels_plasmid_val.cpu().numpy()
-        y_probs_plasmid = probs_plasmid_val.cpu().numpy()
-        sample_weight_plasmid = masks_validate[masks_validate.bool()].cpu().numpy() # weights for validation nodes
+#         y_true_plasmid = labels_plasmid_val.cpu().numpy()
+#         y_probs_plasmid = probs_plasmid_val.cpu().numpy()
+#         sample_weight_plasmid = masks_validate[masks_validate.bool()].cpu().numpy() # weights for validation nodes
         
-        plasmid_scores = score_thresholds(y_true_plasmid, y_probs_plasmid, sample_weight_plasmid)
-        store_best(plasmid_scores, parameters, 'plasmid_threshold', log_dir)
+#         plasmid_scores = score_thresholds(y_true_plasmid, y_probs_plasmid, sample_weight_plasmid)
+#         store_best(plasmid_scores, parameters, 'plasmid_threshold', log_dir)
 
-        # --- Process Chromosome ---
-        # Select only validation set nodes for chromosome output
-        labels_chromosome_val = data.y[masks_validate.bool(), 1]
-        probs_chromosome_val = outputs[masks_validate.bool(), 1]
+#         # --- Process Chromosome ---
+#         # Select only validation set nodes for chromosome output
+#         labels_chromosome_val = data.y[masks_validate.bool(), 1]
+#         probs_chromosome_val = outputs[masks_validate.bool(), 1]
 
-        y_true_chromosome = labels_chromosome_val.cpu().numpy()
-        y_probs_chromosome = probs_chromosome_val.cpu().numpy()
-        sample_weight_chromosome = masks_validate[masks_validate.bool()].cpu().numpy()
+#         y_true_chromosome = labels_chromosome_val.cpu().numpy()
+#         y_probs_chromosome = probs_chromosome_val.cpu().numpy()
+#         sample_weight_chromosome = masks_validate[masks_validate.bool()].cpu().numpy()
 
-        chromosome_scores = score_thresholds(y_true_chromosome, y_probs_chromosome, sample_weight_chromosome)
-        store_best(chromosome_scores, parameters, 'chromosome_threshold', log_dir)
+#         chromosome_scores = score_thresholds(y_true_chromosome, y_probs_chromosome, sample_weight_chromosome)
+#         store_best(chromosome_scores, parameters, 'chromosome_threshold', log_dir)
 
 def set_thresholds_from_predictions(y_true, y_probs, parameters, log_dir=None):
     """
-    Sets optimal thresholds by maximizing F1 score based on pre-computed
+    Sets optimal thresholds by maximizing the F1 score based on pre-computed
     true labels and predicted probabilities from a validation set.
+
+    This function orchestrates the process of finding the best decision threshold
+    for both the plasmid and chromosome classes independently.
     """
-    # --- Process Plasmid ---
+
+    # --- process plasmid ---
+    # isolate the true labels and predicted probabilities for the plasmid class
     y_true_plasmid = y_true[:, 0].cpu().numpy()
     y_probs_plasmid = y_probs[:, 0].cpu().numpy()
-    # Assume all provided validation nodes have equal weight of 1.0
     sample_weight_plasmid = np.ones_like(y_true_plasmid)
 
-    # Calculate F1 scores for all possible thresholds
+    # calculate F1 scores for all possible thresholds for the plasmid class
     plasmid_scores = score_thresholds(y_true_plasmid, y_probs_plasmid, sample_weight_plasmid)
     # Find the best threshold and store it in the parameters object
     store_best(plasmid_scores, parameters, 'plasmid_threshold', log_dir)
 
-    # --- Process Chromosome ---
+    # --- process chromosome ---
     y_true_chromosome = y_true[:, 1].cpu().numpy()
     y_probs_chromosome = y_probs[:, 1].cpu().numpy()
     sample_weight_chromosome = np.ones_like(y_true_chromosome)
@@ -195,12 +195,26 @@ def set_thresholds_from_predictions(y_true, y_probs, parameters, log_dir=None):
     store_best(chromosome_scores, parameters, 'chromosome_threshold', log_dir)
 
 def apply_thresholds(y, parameters):
-    """Apply thresholds during testing, return transformed scores so that 0.5 corresponds to threshold"""
+    """
+    Transforms raw model probabilities into final scores using custom thresholds.
+
+    This function rescales the probabilities for each class (plasmid, chromosome)
+    such that the custom-defined threshold becomes the new 0.5 decision boundary.
+    This allows for a standard prediction rule (score > 0.5) to be used after
+    the transformation.
+    """
+
     columns = []
+    # iterate through each output class: 0 for plasmid, 1 for chromosome
     for (column_idx, which_parameter) in [(0, 'plasmid_threshold'), (1, 'chromosome_threshold')]:
+        # retrieve the optimal threshold for the current class
         threshold = parameters[which_parameter]
+        # get the original probability predictions for this class
         orig_column = y[:, column_idx]
-        # apply the scaling function with different parameters for small and large numbers
+        
+        # Apply a piecewise scaling function. Values below the threshold are mapped
+        # to the [0, 0.5] range, and values at or above the threshold are mapped
+        # to the [0.5, 1] range.
         new_column = np.piecewise(
             orig_column,
             [orig_column < threshold, orig_column >= threshold],
@@ -208,31 +222,34 @@ def apply_thresholds(y, parameters):
         )
         columns.append(new_column)
 
+    # combine the newly scaled columns and return as a single numpy array
     y_new = np.array(columns).transpose()
     return y_new
 
 def scale_number(x, s1, e1, s2, e2):
-    """Scale number x so that interval (s1,e1) is transformed to (s2, e2)"""
+    """
+    Linearly scales a number from one range to another.
+    """
 
     factor = (e2 - s2) / (e1 - s1)
     return (x - s1) * factor + s2
 
 def store_best(scores, parameters, which, log_dir):
-    """store the optimal threshold for one output in parameter and if requested, print all thresholds to a log file"""
-    # scores is a list of pairs threshold, F1 score
+    """
+    Finds the best threshold from a list of (threshold, F1 score) pairs
+    and stores it in the parameters object.
+    """
+
+    # scores is a list of (threshold, F1 score) pairs
     if len(scores) > 0:
         # find index of maximum in scores[*][1]
         maxindex = max(range(len(scores)), key = lambda i : scores[i][1])
-        # corrsponding item in scores[*][0] is the threshold
         threshold = scores[maxindex][0]
     else:
-        # is input array empty, use default 0.5
         threshold = 0.5
-    # store the found threshold
     parameters[which] = float(threshold)
 
     if log_dir is not None:
-        # store thresholds and F1 scores
         filename = os.path.join(log_dir, which + ".csv")
         with open(filename, 'wt') as file:
             print(f"{which},f1", file=file)
@@ -240,7 +257,13 @@ def store_best(scores, parameters, which, log_dir):
                 print(",".join(str(value) for value in x), file=file)
 
 def score_thresholds(y_true, y_pred, weights):
-    """Compute F1 score of all thresholds for one output (plasmid or chromosome)"""
+    """
+    Computes F1 scores for all possible decision thresholds for a single class.
+
+    This function efficiently calculates the F1 score at every unique probability
+    value in the predictions, treating each as a potential threshold.
+    """
+
     # compute vector weight and check that all are the same
     length = y_true.shape[0]
     assert tuple(y_true.shape) == (length,)
@@ -276,7 +299,6 @@ def score_thresholds(y_true, y_pred, weights):
             scores.append((threshold, f1))
     
     return scores
-
 
 
 import itertools

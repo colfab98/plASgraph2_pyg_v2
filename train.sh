@@ -1,9 +1,9 @@
 #!/bin/bash
 #SBATCH --job-name=train-single
 #SBATCH --nodes=1
-#SBATCH --ntasks-per-node=1  # A single task
-#SBATCH --gpus-per-task=1    # Request one GPU for the task
-#SBATCH --time=04:00:00
+#SBATCH --ntasks-per-node=1  
+#SBATCH --gpus-per-task=1    
+#SBATCH --time=01:00:00
 
 PYTHONUNBUFFERED=1 python -m scripts.train \
     --data_cache_dir cache/eskapee-train/ \
