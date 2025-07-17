@@ -279,6 +279,11 @@ def train_final_model(parameters, data, splits, labeled_indices, log_dir, G, nod
                 utils.fix_gradients(parameters, model)
                 optimizer.step()
                 total_train_loss += loss.item()
+
+            # gradient magnitude plotting (first fold only)
+            if fold_idx == 0: 
+                grad_data = utils.get_gradient_magnitudes(model)
+                utils.plot_gradient_magnitudes(grad_data, epoch + 1, cv_plots_dir)
             
             avg_train_loss = total_train_loss / len(train_loader)
             train_losses_fold.append(avg_train_loss)
