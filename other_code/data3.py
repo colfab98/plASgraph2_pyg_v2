@@ -1,25 +1,26 @@
-import fileinput
+
+import torch 
+from torch_geometric.data import Data, InMemoryDataset
+import numpy as np
+import pandas as pd
+import networkx as nx
 import itertools
+import fileinput
 import math
 import re
 import subprocess
-import os
 
-from accelerate import Accelerator
-import networkx as nx
-import numpy as np
-import pandas as pd
-import torch 
-import torch.distributed as dist
-import torch.nn.functional as F
-from torch.utils.data import DataLoader, Dataset
-from torch_geometric.data import Data, InMemoryDataset
-from tqdm import tqdm
 from transformers import AutoModel, AutoTokenizer, BertModel
+from torch.nn.functional import cosine_similarity
 
 from . import utils
 
-os.environ["TOKENIZERS_PARALLELISM"] = "false"
+from accelerate import Accelerator
+import torch.distributed as dist
+from tqdm import tqdm
+
+from torch.utils.data import DataLoader, Dataset
+
 
 
 class EdgeDataset(Dataset):
@@ -66,59 +67,56 @@ class EvoFeatureGenerator:
     def __init__(self, model_name, accelerator: Accelerator):
         print(f"Initializing EvoFeatureGenerator with model: {model_name} on device: {accelerator.device}")
         self.accelerator = accelerator
-        # load the tokenizer specific to the chosen Evo model from Hugging Face
         self.tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
-        # load the base Evo model (BertModel) to get the raw hidden states
+        # Using AutoModel to get hidden states without the language modeling head
         self.model = BertModel.from_pretrained(model_name, trust_remote_code=True)
-        # get the size of the embeddings
         self.embedding_dim = self.model.config.hidden_size
-        # prepare the model for the appropriate device (CPU/GPU) using the Accelerator
+
         self.model = self.accelerator.prepare(self.model)
-        # set the model to evaluation mode to disable dropout and other training-specific layers
+
         self.model.eval()
 
     @torch.no_grad()
     def get_embedding(self, dna_sequence):
         """Generates an embedding for a single DNA sequence, handling long sequences by chunking."""
-        # if the input sequence is empty, return a zero vector of the correct embedding dimension
         if not dna_sequence:
             return torch.zeros(self.embedding_dim, device=self.accelerator.device)
-        # tokenize the entire DNA sequence into a list of token IDs
-        token_ids = self.tokenizer.encode(dna_sequence, add_special_tokens=False)      
-        # set the maximum number of tokens the model can handle at once, leaving space for [CLS] and [SEP]
-        max_length = 510 
+
+        # --- FIX: Process long sequences in chunks ---
+        
+        # Tokenize the entire sequence once
+        token_ids = self.tokenizer.encode(dna_sequence, add_special_tokens=False)
+        
+        # If the sequence is short enough, process it in one go
+        max_length = 510 # Use 510 to leave space for [CLS] and [SEP] tokens
         if len(token_ids) <= max_length:
-            # use the tokenizer to prepare the full input with special tokens and return PyTorch tensors
             inputs = self.tokenizer(dna_sequence, return_tensors="pt")
-            # move inputs to the correct device
+            # Move inputs to the correct device
             inputs = {k: v.to(self.accelerator.device) for k, v in inputs.items()}
-            # pass the inputs to the model
             outputs = self.model(**inputs)
-            # calculate the final embedding by taking the mean of the last hidden state across all tokens and remove the batch dimension
+            # Return a GPU tensor, not a numpy array
             return outputs.last_hidden_state.mean(dim=1).squeeze()
 
-        # for long sequences, process in chunks and average the results
+        # For long sequences, process in chunks and average the results
         chunk_embeddings = []
-        # iterate over the token IDs in steps of `max_length`
         for i in range(0, len(token_ids), max_length):
-            # extract the current chunk of token IDs
             chunk = token_ids[i:i + max_length]
-            # manually create the input tensor for the chunk, adding the CLS and SEP token IDs
+
+            # Use the correct variable 'chunk' and move tensors to the correct device
             input_ids = torch.tensor([self.tokenizer.cls_token_id] + chunk + [self.tokenizer.sep_token_id]).unsqueeze(0)
-            # create an attention mask of all ones, as we want to attend to all tokens in the chunk
             attention_mask = torch.ones_like(input_ids)
 
-            # pass tensors to the model on the correct device
+            # Pass tensors to the model on the correct device
             outputs = self.model(
                 input_ids=input_ids.to(self.accelerator.device),
                 attention_mask=attention_mask.to(self.accelerator.device)
             )
             
-            # calculate the mean embedding for this chunk
+            # Get the mean embedding for this chunk and store it
             chunk_embedding = outputs.last_hidden_state.mean(dim=1).squeeze()
             chunk_embeddings.append(chunk_embedding)
 
-        # average the embeddings of all chunks by stacking them into a tensor and taking the mean along the new dimension
+        # Average the embeddings of all chunks to get the final representation
         final_embedding = torch.stack(chunk_embeddings).mean(dim=0)
         return final_embedding
     
@@ -126,23 +124,21 @@ class EvoFeatureGenerator:
     def get_embeddings_batch(self, sequences: list[str]):
         """
         Generates embeddings for a BATCH of DNA sequences.
-        Short sequences are batched together, while long sequences are chunked and processed efficiently.
+        Short sequences are batched in mini-batches. Long sequences are processed individually.
         """
         max_length = 510
-        # to store the final embeddings, ensuring the order is preserved
         results = [None] * len(sequences)
-        # lists to hold the indices and content of short and long sequences
+        
         short_sequences_indices = []
         short_sequences_list = []
         long_sequences_indices = []
 
-        # first, classify all sequences as short or long based on their tokenized length
+        # First, classify sequences as short or long based on token length
         for i, seq in enumerate(sequences):
-            # handle empty sequences
             if not seq:
                 results[i] = torch.zeros(self.embedding_dim, dtype=torch.float32, device=self.accelerator.device)
                 continue
-            # tokenize the sequence to find its length
+            
             token_ids = self.tokenizer.encode(seq, add_special_tokens=False)
             if len(token_ids) <= max_length:
                 short_sequences_indices.append(i)
@@ -150,27 +146,24 @@ class EvoFeatureGenerator:
             else:
                 long_sequences_indices.append(i)
 
-        # --- process all short sequences in batches ---
         if short_sequences_list:
-            # define a mini-batch size for processing the short sequences
             mini_batch_size = 128
-            # PyTorch Dataset to wrap the short sequences and their original indices
+            
             short_seq_dataset = SequenceDataset(short_sequences_list, short_sequences_indices)
-            # DataLoader to handle batching of the short sequences
             data_loader = DataLoader(
                 short_seq_dataset,
                 batch_size=mini_batch_size,
-                shuffle=False,  
-                # use a custom collate function to handle sequences and indices
-                collate_fn=sequence_collate_fn 
+                shuffle=False,  # No need to shuffle, just processing
+                collate_fn=sequence_collate_fn
             )
 
+            
+            # Wrap the iterator with tqdm, which will only display on the main process
             progress_bar = tqdm(data_loader, 
                                 desc="  > Processing Short Sequences", 
                                 disable=not self.accelerator.is_main_process)
-            # iterate over the mini-batches of short sequences
+            
             for batch_sequences, batch_indices in progress_bar:
-                # tokenize the entire batch at once, with padding and truncation
                 inputs = self.tokenizer(
                     batch_sequences, 
                     return_tensors="pt", 
@@ -178,69 +171,65 @@ class EvoFeatureGenerator:
                     truncation=True, 
                     max_length=512
                 )
-                # move the tokenized batch to the correct GPU/CPU
                 inputs = {k: v.to(self.accelerator.device) for k, v in inputs.items()}
-                # run the model on the batch
+                
                 outputs = self.model(**inputs)
-                # calculate the mean embedding for every sequence in the batch
                 short_embeddings = outputs.last_hidden_state.mean(dim=1)
                 
-                # place each resulting embedding into the main `results` list at its correct original position
+                # Place results in their original positions
                 for j, original_index in enumerate(batch_indices):
                     results[original_index] = short_embeddings[j]
                 
-        # --- process all long sequences by chunking and batching the chunks ---
+        # ADD THIS BLOCK IN ITS PLACE
         if long_sequences_indices:
             all_chunk_strings = []
             all_chunk_origins = [] # Tracks which original sequence each chunk belongs to
 
-            # deconstruct all long sequences into a single flat list of string chunks
+            # 1. Deconstruct all long sequences into a single list of string chunks
             for original_idx in long_sequences_indices:
                 sequence = sequences[original_idx]
-                # tokenize the long sequence
                 token_ids = self.tokenizer.encode(sequence, add_special_tokens=False)
-                # iterate through the token IDs in chunks
                 for i in range(0, len(token_ids), max_length):
                     chunk_token_ids = token_ids[i:i + max_length]
-                    # decode the token chunk back to a string so the tokenizer can handle batch padding
+                    # Decode back to a string so the tokenizer can handle batch padding
                     chunk_string = self.tokenizer.decode(chunk_token_ids)
                     all_chunk_strings.append(chunk_string)
                     all_chunk_origins.append(original_idx)
 
-            # dictionary to gather the embeddings for all chunks belonging to the same original sequence
+            # A dictionary to gather the chunk embeddings for each original sequence
             results_by_origin = {idx: [] for idx in long_sequences_indices}
 
-            # DataLoader to create large batches of these chunks for efficient processing
+            # 2. Use a DataLoader to create large batches of these chunks
+            # We can reuse the SequenceDataset and collate_fn for this
             chunk_dataset = SequenceDataset(all_chunk_strings, all_chunk_origins)
-            # use a larger batch size for chunks as they are uniformly sized and smaller
+            # Use a larger batch size for chunks as they are smaller
             chunk_loader = DataLoader(chunk_dataset, batch_size=256, collate_fn=sequence_collate_fn)
 
             progress_bar = tqdm(chunk_loader,
                                 desc="  > Processing Long Sequence Chunks",
                                 disable=not self.accelerator.is_main_process)
 
-            # process the large batches of chunks on the GPU
+            # 3. Process the large batches of chunks on the GPU
             for chunk_strings_batch, origin_indices_batch in progress_bar:
                 inputs = self.tokenizer(chunk_strings_batch, return_tensors="pt", padding=True)
                 inputs = {k: v.to(self.accelerator.device) for k, v in inputs.items()}
                 outputs = self.model(**inputs)
                 chunk_embeddings = outputs.last_hidden_state.mean(dim=1)
 
-                # gather the results, appending each chunk's embedding to the list for its original sequence
+                # Gather the results
                 for i, origin_idx in enumerate(origin_indices_batch):
                     results_by_origin[origin_idx].append(chunk_embeddings[i])
 
-            # average the chunk embeddings for each original sequence to get the final embedding
+            # 4. Average the chunk embeddings for each original sequence
             for original_idx, gathered_chunks in results_by_origin.items():
                 if gathered_chunks:
                     final_embedding = torch.stack(gathered_chunks).mean(dim=0)
                     results[original_idx] = final_embedding
 
-        # final check for any sequences that might not have been processed
         for i, res in enumerate(results):
             if res is None:
                  results[i] = torch.zeros(self.embedding_dim, dtype=torch.float32, device=self.accelerator.device)
-        # stack the list of individual tensors into a single batch tensor for the final output       
+                 
         final_embeddings = torch.stack(results)
         return final_embeddings
     
@@ -265,137 +254,183 @@ class Dataset_Pytorch(InMemoryDataset):
 
     def process(self):
 
-        is_distributed = self.accelerator.num_processes > 1
-
         # check ensures that the file I/O and initial data aggregation are
         # performed by only ONE process (the main process) in a distributed setup
         if self.accelerator.is_main_process:
             print("Main process: Reading raw graph files to generate sequence list...")
 
-            # read all specified graph files (GFAs) and combine them into a single NetworkX graph object
+            # Read all specified graph files (GFAs) and combine them into a single NetworkX graph object
             self.G = read_graph_set(self.file_prefix, self.train_file_list, self.parameters['minimum_contig_length'], self.accelerator)
             self.node_list = list(self.G)
             
-            # data all other processes need
+            # This is the data all other processes need
             all_sequences = [self.G.nodes[node_id].get("sequence", "") for node_id in self.node_list]
-
-        if is_distributed:
-            # Broadcast the initial data from the main process to all others
-            if self.accelerator.is_main_process:
-                objects_to_broadcast = [all_sequences]
-            else:
-                objects_to_broadcast = [None]
-            dist.broadcast_object_list(objects_to_broadcast, src=0)
-            all_sequences = objects_to_broadcast[0]
-
-        with self.accelerator.split_between_processes(all_sequences) as sequences_split:
-            sequences_on_this_process = list(sequences_split)
             
-            # Check if there are sequences to process to avoid unnecessary initialization
-            if sequences_on_this_process:
-                evo_gen = EvoFeatureGenerator(self.parameters['evo_model_name'], self.accelerator)
-                embeddings_on_this_process = evo_gen.get_embeddings_batch(sequences_on_this_process)
-            else:
-                embeddings_on_this_process = torch.tensor([])
-
-
-        if is_distributed:
-            # If distributed, gather the results from all processes.
-            gathered_embeddings = [None] * self.accelerator.num_processes
-            # This is the line that was failing. It's now safely inside the conditional block.
-            dist.all_gather_object(gathered_embeddings, embeddings_on_this_process)
-            
-            if self.accelerator.is_main_process:
-                # On the main process, concatenate the gathered tensors into one.
-                all_embeddings_tensor = torch.cat([t.to(self.accelerator.device) for t in gathered_embeddings if t.numel() > 0], dim=0)
+            # We put the list into a container to broadcast it
+            objects_to_broadcast = [all_sequences]
+            print(f"Main process: Broadcasting {len(all_sequences)} sequences to other processes...")
         else:
-            # If not distributed, the results are simply what this one process computed.
-            all_embeddings_tensor = embeddings_on_this_process
+            # Other processes prepare an empty container to receive the data
+            objects_to_broadcast = [None]
+
+        # broadcast the data from the main process to all others 
+        # the main process (src=0) sends the list of all sequences to every other process
+        dist.broadcast_object_list(objects_to_broadcast, src=0)
+
+        # all processes now have an identical copy of the sequence list
+        all_sequences = objects_to_broadcast[0]
+
+        all_embeddings_tensor = None
+        if self.parameters['feature_generation_method'] == 'evo':
+            self.accelerator.print("All processes: Starting parallel embedding generation.")
+
+            # accelerator's context manager to automatically split the list of all sequences
+            # into unique, evenly-sized chunks for each process
+            with self.accelerator.split_between_processes(all_sequences) as sequences_split:
+
+                # unique subset of sequences this specific process is responsible for
+                sequences_on_this_process = list(sequences_split)
+
+                evo_gen = EvoFeatureGenerator(self.parameters['evo_model_name'], self.accelerator)
+                self.accelerator.print(f"Process {self.accelerator.process_index}: Generating {len(sequences_on_this_process)} embeddings.")
+                embeddings_on_this_process = evo_gen.get_embeddings_batch(sequences_on_this_process)
+
+                # gather the results from all processes
+                gathered_embeddings = [None] * self.accelerator.num_processes
+                dist.all_gather_object(gathered_embeddings, embeddings_on_this_process)
+
+                # assemble the final tensor on the main process only
+                if self.accelerator.is_main_process:
+                    main_process_device = self.accelerator.device
+                    tensors_on_main_device = [
+                        t.to(main_process_device) for t in gathered_embeddings
+                    ]
+
+                    # concatenate the list of tensors into a single, complete tensor
+                    all_embeddings_tensor = torch.cat(tensors_on_main_device, dim=0)
 
 
+        # makes all processes wait at this line until every other process has also reached it
+        self.accelerator.wait_for_everyone()
+
+        # parallel edge attribute calculation
         if self.accelerator.is_main_process:
+            # create a map from a node's string ID to its integer index in the tensor for efficient lookups
             node_to_idx = {node_id: i for i, node_id in enumerate(self.node_list)}
             edge_list = list(self.G.edges())
 
-            # Calculate similarities on the main process
-            u_indices = [node_to_idx[u] for u, v in edge_list]
-            v_indices = [node_to_idx[v] for u, v in edge_list]
-            
-            # Move indices to the correct device for gathering embeddings
-            u_indices_tensor = torch.tensor(u_indices, device=all_embeddings_tensor.device)
-            v_indices_tensor = torch.tensor(v_indices, device=all_embeddings_tensor.device)
+            emb_shape = all_embeddings_tensor.shape
+            objects_to_broadcast = [node_to_idx, edge_list, emb_shape]
+            self.accelerator.print(f"Broadcasting node map and {len(edge_list)} edges for parallel processing.")
+        else:
+            objects_to_broadcast = [None, None, None]
 
-            emb_u = all_embeddings_tensor[u_indices_tensor]
-            emb_v = all_embeddings_tensor[v_indices_tensor]
+        # broadcast the list of Python objects from the main process (src=0) to all others.
+        dist.broadcast_object_list(objects_to_broadcast, src=0)
+        # unpack the received objects on all processes
+        node_to_idx, edge_list, emb_shape = objects_to_broadcast
 
-            # Calculate cosine similarity for all edges at once
-            similarities = F.cosine_similarity(emb_u, emb_v)
+        # prepare the tensor for broadcasting on the sender and create empty receptacles on the receivers
+        if self.accelerator.is_main_process:
+            embeddings_to_broadcast = all_embeddings_tensor.contiguous()
+        else:
+            # create an empty tensor with the exact shape and type needed to receive the broadcasted data
+            embeddings_to_broadcast = torch.empty(emb_shape, dtype=torch.float32, device=self.accelerator.device)
 
-            # ------------ THIS IS THE FIX ------------
-            # REMOVE the dist.all_gather_object call and the list flattening.
-            # We already have the final `similarities` tensor.
-            # -----------------------------------------
+        # perform the broadcast
+        dist.broadcast(embeddings_to_broadcast, src=0)
+        # assign the now-populated tensor on each process to a new variable
+        all_embeddings_tensor_local = embeddings_to_broadcast
 
+        # automatically split the full edge_list into a unique, evenly-sized chunk for this specific process
+        with self.accelerator.split_between_processes(edge_list) as edges_on_this_process:
+            local_similarities = []
+            if len(edges_on_this_process) > 0:
+
+                # pre-calculate all indices on the CPU at once to minimize loop overhead
+                u_indices_all = torch.tensor([node_to_idx[u] for u, v in edges_on_this_process], dtype=torch.long)
+                v_indices_all = torch.tensor([node_to_idx[v] for u, v in edges_on_this_process], dtype=torch.long)
+                
+                # process in very large chunks to give the GPU a substantial amount of work
+                chunk_size = 65536
+
+                # progress bar
+                loop_iterator = range(0, len(edges_on_this_process), chunk_size)
+                progress_bar = tqdm(loop_iterator,
+                                    desc="  > Calculating Edge Attributes",
+                                    disable=not self.accelerator.is_main_process)
+                
+                # loop over the assigned edges in large chunks
+                for i in range(0, len(edges_on_this_process), chunk_size):
+                    # get the current chunk of indices and move it to the active GPU
+                    u_indices_chunk = u_indices_all[i:i+chunk_size].to(self.accelerator.device)
+                    v_indices_chunk = v_indices_all[i:i+chunk_size].to(self.accelerator.device)
+
+                    # gather the corresponding embeddings directly on the GPU
+                    emb_u_batch = all_embeddings_tensor_local[u_indices_chunk]
+                    emb_v_batch = all_embeddings_tensor_local[v_indices_chunk]
+
+                    # perform the fast GPU calculation on the large batch
+                    similarities = cosine_similarity(emb_u_batch, emb_v_batch)
+                    local_similarities.extend(similarities.cpu().tolist())
+
+        # Gather results from all processes
+        gathered_sims_nested = [None] * self.accelerator.num_processes
+        dist.all_gather_object(gathered_sims_nested, local_similarities)
+        
+        # final graph construction (on main process)
+        if self.accelerator.is_main_process:
             self.accelerator.print("Constructing final PyG Data object...")
+            
+            # flatten the gathered lists. order is preserved by split_between_processes
+            flat_similarities = [item for sublist in gathered_sims_nested for item in sublist]
 
-            # Assign the calculated similarities back to the NetworkX graph object
-            self.accelerator.print("Attaching edge attributes to NetworkX graph object...")
-            for i, (u, v) in enumerate(edge_list):
-                # Use the `similarities` tensor directly
-                self.G.edges[u, v]['embedding_cosine_similarity'] = similarities[i].item()
+            # create the final edge attributes list for the PyG Data object
+            edge_attr_list = []
+            for sim in flat_similarities:
+                # append for both directions of the undirected edge
+                edge_attr_list.append([sim])
+                edge_attr_list.append([sim])
 
+            # construct node features (x) and batch tensor
+            features = self.parameters["features"]
+            x = np.array([[self.G.nodes[node_id][f] for f in features] for node_id in self.node_list])
 
+            # construct the batch tensor, which maps each node to its original sample graph
+            sample_ids = [node.split(':')[0] for node in self.node_list]
+            unique_samples = sorted(list(set(sample_ids)))
+            sample_to_idx_map = {sample_id: i for i, sample_id in enumerate(unique_samples)}
+            batch_indices = [sample_to_idx_map[node.split(':')[0]] for node in self.node_list]
+            batch_tensor = torch.tensor(batch_indices, dtype=torch.long)
 
-        # create the final edge attributes list for the PyG Data object
-        edge_attr_list = []
-        # Correctly loop over the `similarities` tensor
-        for sim in similarities: 
-            # append for both directions of the undirected edge
-            # Use .item() to get the Python number from the tensor
-            edge_attr_list.append([sim.item()]) 
-            edge_attr_list.append([sim.item()])
+            # construct the label matrix (y)
+            label_features = ["plasmid_label", "chrom_label"]
+            y = np.array([[self.G.nodes[node_id][f] for f in label_features] for node_id in self.node_list])
 
-        # construct node features (x) and batch tensor
-        features = self.parameters["features"]
-        x = np.array([[self.G.nodes[node_id][f] for f in features] for node_id in self.node_list])
+            # construct the edge index tensor in COO format [2, num_edges]
+            edge_list_sources, edge_list_targets = [], []
+            for u, v in edge_list:
+                u_idx, v_idx = node_to_idx[u], node_to_idx[v]
+                # add entries for both directions of the edge
+                edge_list_sources.extend([u_idx, v_idx])
+                edge_list_targets.extend([v_idx, u_idx])
+            edge_index = torch.tensor(np.vstack((edge_list_sources, edge_list_targets)), dtype=torch.long)
+            
+            # create the final PyG Data object
+            data = Data(
+                x=torch.tensor(x, dtype=torch.float),                       # node features
+                edge_index=edge_index,                                      # graph connectivity
+                y=torch.tensor(y, dtype=torch.float),                       # node lables
+                edge_attr=torch.tensor(edge_attr_list, dtype=torch.float),  # edge features
+                batch=batch_tensor                                          # maps nodes to samples
+            )
+            
+            # use the parent class's collate method to prepare the data for batching
+            processed_data, slices = self.collate([data])
+            torch.save((processed_data, slices, self.G, self.node_list), self.processed_paths[0])
+            self.accelerator.print("✅ Graph data processed and saved.")
 
-        # construct the batch tensor, which maps each node to its original sample graph
-        sample_ids = [node.split(':')[0] for node in self.node_list]
-        unique_samples = sorted(list(set(sample_ids)))
-        sample_to_idx_map = {sample_id: i for i, sample_id in enumerate(unique_samples)}
-        batch_indices = [sample_to_idx_map[node.split(':')[0]] for node in self.node_list]
-        batch_tensor = torch.tensor(batch_indices, dtype=torch.long)
-
-        # construct the label matrix (y)
-        label_features = ["plasmid_label", "chrom_label"]
-        y = np.array([[self.G.nodes[node_id][f] for f in label_features] for node_id in self.node_list])
-
-        # construct the edge index tensor in COO format [2, num_edges]
-        edge_list_sources, edge_list_targets = [], []
-        for u, v in edge_list:
-            u_idx, v_idx = node_to_idx[u], node_to_idx[v]
-            # add entries for both directions of the edge
-            edge_list_sources.extend([u_idx, v_idx])
-            edge_list_targets.extend([v_idx, u_idx])
-        edge_index = torch.tensor(np.vstack((edge_list_sources, edge_list_targets)), dtype=torch.long)
-        
-        # create the final PyG Data object
-        data = Data(
-            x=torch.tensor(x, dtype=torch.float),                       # node features
-            edge_index=edge_index,                                      # graph connectivity
-            y=torch.tensor(y, dtype=torch.float),                       # node lables
-            edge_attr=torch.tensor(edge_attr_list, dtype=torch.float),  # edge features
-            batch=batch_tensor                                          # maps nodes to samples
-        )
-        
-        # use the parent class's collate method to prepare the data for batching
-        processed_data, slices = self.collate([data])
-        torch.save((processed_data, slices, self.G, self.node_list), self.processed_paths[0])
-        self.accelerator.print("✅ Graph data processed and saved.")
-
-        if is_distributed:
-            self.accelerator.wait_for_everyone()
-
+        self.accelerator.wait_for_everyone()
 
 
 def KL(a, b):
@@ -590,22 +625,16 @@ def read_graph_set(file_prefix, file_list, minimum_contig_length, accelerator, r
     corresponding graph file and add its contents to a unified graph object.
     """
 
-    # Read all file entries from the manifest
-    all_files = pd.read_csv(file_list, names=('graph','csv','sample_id'))
-
-    # Filter the DataFrame to keep only rows where the 'graph' filename contains '-u'
-    train_files = all_files[all_files['graph'].str.contains('-u', na=False)].copy()
-
-    if accelerator.is_main_process:
-        print(f"Found {len(all_files)} total graphs, filtered to {len(train_files)} graphs with '-u' in filename.")
+    # read data frame with files
+    train_files = pd.read_csv(file_list, names=('graph','csv','sample_id'))
 
     total_graphs = len(train_files)
 
     graph = nx.Graph()
-    for i, (idx, row) in enumerate(train_files.iterrows()):
+    for idx, row in train_files.iterrows():
 
         if accelerator.is_main_process:
-            print(f"Processing graph {i + 1}/{total_graphs}: {row['sample_id']}")
+            print(f"Processing graph {idx + 1}/{total_graphs}: {row['sample_id']}")
 
         graph_file = file_prefix + row['graph']
         if read_labels:
