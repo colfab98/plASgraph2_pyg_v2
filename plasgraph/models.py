@@ -49,8 +49,6 @@ class GCNModel(torch.nn.Module):
         self.final_fc1 = nn.Linear(self['n_channels'] * 2, self['n_channels'])
         self.final_fc2 = nn.Linear(self['n_channels'], 2)
 
-        self.output_activation = activation_map[self['output_activation']]
-
 
     def forward(self, data):
         x, edge_index = data.x, data.edge_index

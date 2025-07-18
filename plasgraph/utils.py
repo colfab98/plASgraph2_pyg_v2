@@ -79,7 +79,7 @@ def plot_gradient_magnitudes(grad_data, epoch, log_dir, plot_frequency=10):
     plot_df = plot_df.sort_values('Layer')
 
     plt.figure(figsize=(15, 8))
-    sns.violinplot(x='Layer', y='Gradient Magnitude', data=plot_df, inner='quartile', palette='viridis')
+    sns.violinplot(x='Layer', y='Gradient Magnitude', data=plot_df, inner='quartile', hue='Layer', palette='viridis', legend=False)
     if plot_df['Gradient Magnitude'].max() > 0:
         plt.yscale('log')
 

@@ -18,6 +18,16 @@ from plasgraph.config import config as Config
 from plasgraph.models import GGNNModel, activation_map # Import original GGNN for structure
 from plasgraph.utils import pair_to_label
 
+class DummyAccelerator:
+    """A mock class that satisfies the Dataset_Pytorch constructor."""
+    def __init__(self):
+        # In a real scenario, this would be a real device
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    def print(self, message):
+        print(message)
+
+
 # Define a device
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -236,11 +246,13 @@ def main():
         return
 
     print("Loading dataset...")
+    dummy_accelerator = DummyAccelerator()
     all_graphs = Dataset_Pytorch(
         root=args.data_cache_dir,
         file_prefix=args.file_prefix,
         train_file_list=args.train_file_list,
-        parameters=parameters
+        parameters=parameters,
+        accelerator=dummy_accelerator
     )
     data = all_graphs[0]
     G = all_graphs.G

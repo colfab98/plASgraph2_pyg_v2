@@ -75,6 +75,7 @@ python -u -m scripts.train \
     plasgraph2-datasets/eskapee-train.csv \
     plasgraph2-datasets/ \
     output/ESKAPEE_final_model/ \
+    --training_mode single-fold \
     > output/train.log 2> output/train.err
 
 PYTHONUNBUFFERED=1 accelerate launch --num_processes=1 --mixed_precision=fp16 -m scripts.train \
@@ -84,6 +85,7 @@ PYTHONUNBUFFERED=1 accelerate launch --num_processes=1 --mixed_precision=fp16 -m
     plasgraph2-datasets/eskapee-train.csv \
     plasgraph2-datasets/ \
     output/ESKAPEE_final_model/ \
+    --training_mode single-fold \
     > output/train.log 2> output/train.err
 
 

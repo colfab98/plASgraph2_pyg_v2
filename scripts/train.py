@@ -5,7 +5,7 @@ import os
 import yaml
 import numpy as np
 import torch
-from sklearn.model_selection import KFold
+from sklearn.model_selection import KFold, train_test_split
 
 # Import modules from our library
 from plasgraph.data import Dataset_Pytorch
@@ -43,6 +43,7 @@ def main():
     parser.add_argument("file_prefix", help="Common prefix for all filenames")
     parser.add_argument("model_output_dir", help="Output folder for final model and logs")
     parser.add_argument("--data_cache_dir", required=True, help="Directory to store/load the processed graph data.")
+    parser.add_argument("--training_mode", choices=['k-fold', 'single-fold'], default='k-fold', help="Choose between k-fold ensemble or single-fold training.")
     args = parser.parse_args()
 
     # load base config and update it with the best hyperparameters from HPO
@@ -73,11 +74,24 @@ def main():
     G = all_graphs.G
     node_list = all_graphs.node_list
 
-    # setup CV splits
     print(f"✅ Using model architecture: {parameters['model_type']}")
     labeled_indices = np.array([i for i, node_id in enumerate(node_list) if G.nodes[node_id]["text_label"] != "unlabeled"])
-    kf = KFold(n_splits=parameters["k_folds"], shuffle=True, random_state=parameters["random_seed"])
-    splits = list(kf.split(labeled_indices))
+
+    if args.training_mode == 'k-fold':
+        print(f"✅ Setting up {parameters['k_folds']}-fold cross-validation.")
+        kf = KFold(n_splits=parameters["k_folds"], shuffle=True, random_state=parameters["random_seed"])
+        splits = list(kf.split(labeled_indices))
+    else:
+        print("✅ Setting up single-fold training with an 80/20 train/validation split.")
+        # Create a single 80/20 split
+        train_idx, val_idx = train_test_split(
+            np.arange(len(labeled_indices)), # Split the indices of the labeled_indices array
+            test_size=0.2,
+            random_state=parameters["random_seed"],
+            shuffle=True
+        )
+        # The train_final_model function expects a list of splits
+        splits = [(train_idx, val_idx)]
 
     # train the K-fold ensemble
     train_final_model(

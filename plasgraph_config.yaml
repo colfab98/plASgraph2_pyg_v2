@@ -8,7 +8,7 @@ evo_model_name: zhihan1996/DNABERT-2-117M
 num_workers: 16  
 
 # Model Architecture Parameters
-model_type: GGNNModel
+model_type: GCNModel
 n_gnn_layers: 6
 n_channels_preproc: 10
 n_channels: 32
@@ -21,19 +21,19 @@ edge_gate_hidden_dim: 32
 edge_gate_depth: 3
 
 # Training and Optimization Parameters
-learning_rate: 0.005
-epochs: 1000
+learning_rate: 0.001
+epochs: 2000
 loss_function: crossentropy
 plasmid_ambiguous_weight: 1
 dropout_rate: 0.1
 l2_reg: 2.5e-4
 gradient_clipping: 1
 early_stopping_patience: 100
-early_stopping_patience_retrain : 50
+early_stopping_patience_retrain : 1000
 scheduler_patience : 50
 scheduler_factor : 0.5
 random_seed: 123
-batch_size: 2048
+batch_size: 64
 
 # HPO and Evaluation Parameters
 k_folds: 5

@@ -393,6 +393,13 @@ class Dataset_Pytorch(InMemoryDataset):
             # flatten the gathered lists. order is preserved by split_between_processes
             flat_similarities = [item for sublist in gathered_sims_nested for item in sublist]
 
+            # assign the calculated similarities back to the NetworkX graph object
+            self.accelerator.print("Attaching edge attributes to NetworkX graph object...")
+            for i, (u, v) in enumerate(edge_list):
+                # The attribute name should match what the audit script is looking for
+                self.G.edges[u, v]['embedding_cosine_similarity'] = flat_similarities[i]
+
+
             # create the final edge attributes list for the PyG Data object
             edge_attr_list = []
             for sim in flat_similarities:

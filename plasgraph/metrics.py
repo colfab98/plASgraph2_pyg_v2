@@ -54,7 +54,7 @@ def calculate_and_print_metrics(final_scores, raw_probs, data, masks_test, G, no
             continue
 
         # --- plasmid evaluation ---
-        y_true_p = y_sample[active_mask_for_sample, 0].cpu().numpy()
+        y_true_p = y_sample[active_mask_for_sample.cpu(), 0].cpu().numpy()
         # skip evaluation for this sample if all labels belong to a single class
         if len(np.unique(y_true_p)) > 1:
             # get binary predictions by thresholding the final scores at 0.5
@@ -71,7 +71,7 @@ def calculate_and_print_metrics(final_scores, raw_probs, data, masks_test, G, no
                 print(f"  PLASMID   | F1: {all_f1_plasmid[-1]:.4f} | Acc: {all_acc_plasmid[-1]:.4f} | Prec: {all_prec_plasmid[-1]:.4f} | Rec: {all_rec_plasmid[-1]:.4f} | AUROC: {all_auroc_plasmid[-1]:.4f}")
         
         # --- chromosome evaluation ---
-        y_true_c = y_sample[active_mask_for_sample, 1].cpu().numpy()
+        y_true_c = y_sample[active_mask_for_sample.cpu(), 1].cpu().numpy()
         if len(np.unique(y_true_c)) > 1:
             y_pred_c = (scores_sample[active_mask_for_sample, 1].cpu().numpy() >= 0.5).astype(int)
             y_prob_c = probs_sample[active_mask_for_sample, 1].cpu().numpy()

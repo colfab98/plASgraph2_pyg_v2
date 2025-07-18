@@ -11,6 +11,17 @@ import matplotlib.pyplot as plt
 from plasgraph.data import Dataset_Pytorch
 from plasgraph.config import config as Config
 
+
+class DummyAccelerator:
+    """A mock class that satisfies the Dataset_Pytorch constructor."""
+    def __init__(self):
+        # In a real scenario, this would be a real device
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    def print(self, message):
+        print(message)
+
+
 def analyze_and_plot_feature_distributions(graph: nx.Graph, features_to_analyze: list[str], output_dir: str):
     """
     Analyzes and plots the distribution of specified node features.
@@ -136,12 +147,14 @@ def main():
         return
 
     print(f"✅ Cache found. Loading processed data from: {cache_file_path}")
+    dummy_accelerator = DummyAccelerator()
     parameters = Config(args.config_file)
     all_graphs_dataset = Dataset_Pytorch(
         root=args.data_cache_dir,
         file_prefix=args.file_prefix,
         train_file_list=args.train_file_list,
-        parameters=parameters
+        parameters=parameters,
+        accelerator=dummy_accelerator
     )
     
     G = all_graphs_dataset.G
