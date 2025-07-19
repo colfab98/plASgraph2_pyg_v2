@@ -227,7 +227,10 @@ def train_final_model(parameters, data, splits, labeled_indices, log_dir, G, nod
 
     # define the neighborhood sampling sizes
     n_layers = parameters['n_gnn_layers']
-    neighbors_list = [15] + [10] * (n_layers - 1)
+    first_hop_neighbors = parameters['neighbors_first_hop']
+    subsequent_hop_neighbors = parameters['neighbors_subsequent_hops']
+
+    neighbors_list = [first_hop_neighbors] + [subsequent_hop_neighbors] * (n_layers - 1)
 
     # start the main loop to iterate through each cross-validation fold
     for fold_idx, (train_idx, val_idx) in enumerate(splits):

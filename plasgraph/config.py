@@ -24,8 +24,13 @@ PARAMS = [
     {'name': 'fully_connected_activation', 'type': str, 'default': 'relu'}, # activation function for the final dense layers before the output
     {'name': 'output_activation', 'type': str, 'default': 'none'}, # activation for the final output layer; 'none' is used to get raw logits for loss calculation
     {'name': 'tie_gnn_layers', 'type': bool, 'default': True}, # boolean that, if True, makes all GNN layers share the same weights
+    {'name': 'neighbors_first_hop', 'type': int, 'default': 15}, # Number of neighbors to sample in the first GNN layer hop
+    {'name': 'neighbors_subsequent_hops', 'type': int, 'default': 10}, # Number of neighbors to sample in all subsequent hops
+    {'name': 'use_edge_gate', 'type': bool, 'default': True}, # whether to use an edge gating mechanism to modulate messages based on edge attributes
     {'name': 'edge_gate_hidden_dim', 'type': int, 'default': 32}, # for GGNNModel, this sets the hidden dimension of the neural network that computes edge weights
     {'name': 'edge_gate_depth', 'type': int, 'default': 3}, # for GGNNModel, this sets the number of layers in the edge gating network.
+    {'name': 'use_GraphNorm', 'type': bool, 'default': True}, # whether to use GraphNorm for normalizing node features within each graph in a batch
+
 
     # Training and Optimization Parameters
 

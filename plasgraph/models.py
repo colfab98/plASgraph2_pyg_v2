@@ -88,7 +88,8 @@ class GGNNConv(MessagePassing):
     A Gated Graph Neural Network (GGNN) layer.
 
     This layer uses a gated mechanism to control information flow across edges
-    and a GRU-like mechanism to update node hidden states.
+    and a GRU-like mechanism to update node hidden states. The edge gate can be
+    disabled via the `use_edge_gate` parameter.
     """
     
     def __init__(self, in_channels, out_channels, parameters):
@@ -97,6 +98,7 @@ class GGNNConv(MessagePassing):
 
         activation = parameters['gcn_activation']
         dropout_rate = parameters['dropout_rate']
+        self.use_edge_gate = parameters['use_edge_gate']
 
         self.in_channels = in_channels
         self.out_channels = out_channels
@@ -162,28 +164,34 @@ class GGNNConv(MessagePassing):
         """
         Computes messages from source nodes (j) to target nodes (i).
 
-        This method calculates the learned gate value for each edge and uses it
-        to scale the message being passed.
+        If `use_edge_gate` is True, this method calculates the learned gate value for each edge and uses it
+        to scale the message being passed. Otherwise, it passes
+        a standard GCN-style message.
         """
 
-        # if no edge attributes are provided, create a zero tensor as a placeholder
-        if edge_attr is None: 
-            edge_attr_expanded = torch.zeros((x_i.size(0), 1), device=x_i.device) 
+        if self.use_edge_gate:
+            # if no edge attributes are provided, create a zero tensor as a placeholder
+            if edge_attr is None: 
+                edge_attr_expanded = torch.zeros((x_i.size(0), 1), device=x_i.device) 
+            else:
+                edge_attr_expanded = edge_attr
+
+            # concatenate features of the target node (i), source node (j), and the edge between them
+            edge_gate_input = torch.cat([x_i, x_j, edge_attr_expanded], dim=-1) 
+            # pass the concatenated features through the edge gate network to get a raw logit
+            edge_gate_logit = self.edge_gate_network(edge_gate_input)
+            # apply a sigmoid to get a gate value between 0 and 1
+            edge_gate_value = torch.sigmoid(edge_gate_logit)
+
+            # calculate the standard GCN message, scaled by the normalization factor
+            original_message = norm.view(-1, 1) * x_j
+            # message that would have been passed from node j is multiplied by this learned edge_gate_value
+            gated_message = edge_gate_value * original_message
+            return gated_message
         else:
-            edge_attr_expanded = edge_attr
+            original_message = norm.view(-1, 1) * x_j
+            return original_message
 
-        # concatenate features of the target node (i), source node (j), and the edge between them
-        edge_gate_input = torch.cat([x_i, x_j, edge_attr_expanded], dim=-1) 
-        # pass the concatenated features through the edge gate network to get a raw logit
-        edge_gate_logit = self.edge_gate_network(edge_gate_input)
-        # apply a sigmoid to get a gate value between 0 and 1
-        edge_gate_value = torch.sigmoid(edge_gate_logit)
-
-        # calculate the standard GCN message, scaled by the normalization factor
-        original_message = norm.view(-1, 1) * x_j
-        # message that would have been passed from node j is multiplied by this learned edge_gate_value
-        gated_message = edge_gate_value * original_message
-        return gated_message
 
     def update(self, aggr_out, x):
         """
@@ -278,12 +286,12 @@ class GGNNModel(torch.nn.Module):
         # apply the input preprocessing block
         x = self.preproc(x)
         # apply GraphNorm using the batch vector to normalize features on a per-graph basis
-        x = self.norm_preproc(x, data.batch)
+        x = self.norm_preproc(x, data.batch) if self['use_GraphNorm'] else x
         x = self.preproc_activation(x)
 
         # apply the initial node transformation to get the first hidden state (h_0)
         h_0 = self.initial_node_transform(x)
-        h_0 = self.norm_initial(h_0, data.batch)
+        h_0 = self.norm_initial(h_0, data.batch) if self['use_GraphNorm'] else h_0
         h_0 = self.fully_connected_activation(h_0) 
         
         # store the initial hidden state for the final skip connection
@@ -301,7 +309,7 @@ class GGNNModel(torch.nn.Module):
             else:
                 h = self.ggnn_layers[i](h, edge_index, edge_attr=current_edge_attr) 
             # apply GraphNorm after each message passing step
-            h = self.norm_ggnn(h, data.batch)
+            h = self.norm_ggnn(h, data.batch) if self['use_GraphNorm'] else h
 
         # --- prediction head ---
         # concatenate the initial node embeddings (skip connection) with the final GNN embeddings
@@ -311,7 +319,7 @@ class GGNNModel(torch.nn.Module):
         
         # pass through the first fully connected layer of the prediction head
         x = self.final_fc1(x) 
-        x = self.norm_final_fc1(x, data.batch)
+        x = self.norm_final_fc1(x, data.batch) if self['use_GraphNorm'] else x
         x = self.fully_connected_activation(x) 
 
         # apply dropout again before the final output layer
