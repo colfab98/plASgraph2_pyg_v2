@@ -37,12 +37,12 @@ early_stopping_patience_retrain : 1000
 scheduler_patience : 50
 scheduler_factor : 0.5
 random_seed: 123
-batch_size: 64
+batch_size: 8192
 
 # HPO and Evaluation Parameters
 k_folds: 5
 optuna_n_trials: 30
-epochs_trials: 500
+epochs_trials: 200
 n_startup_trials: 10 
 set_thresholds: true
 plasmid_threshold: 0.5

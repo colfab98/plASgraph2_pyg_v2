@@ -38,10 +38,10 @@ def objective(trial, accelerator, parameters, data, splits, labeled_indices):
 
     # use the 'trial' object to suggest hyperparameter values for Optuna to optimize
     trial_params_dict = parameters._params.copy()
-    # trial_params_dict['l2_reg'] = trial.suggest_float("l2_reg", 1e-6, 1e-2, log=True)
+    trial_params_dict['l2_reg'] = trial.suggest_float("l2_reg", 1e-4, 1e-2, log=True)
     trial_params_dict['n_channels'] = trial.suggest_int("n_channels", 16, 64, step=16)
     trial_params_dict['n_gnn_layers'] = trial.suggest_int("n_gnn_layers", 4, 8)
-    # trial_params_dict['dropout_rate'] = trial.suggest_float("dropout_rate", 0.0, 0.3)
+    trial_params_dict['dropout_rate'] = trial.suggest_float("dropout_rate", 0.0, 0.3)
     trial_params_dict['gradient_clipping'] = trial.suggest_float("gradient_clipping", 0.0, 0.3)
     trial_params_dict['edge_gate_hidden_dim'] = trial.suggest_int("edge_gate_hidden_dim", 16, 64, step=8)
     trial_params_dict['n_channels_preproc'] = trial.suggest_int("n_channels_preproc", 5, 15, step=5)
@@ -49,8 +49,10 @@ def objective(trial, accelerator, parameters, data, splits, labeled_indices):
     trial_params_dict['batch_size'] = trial.suggest_categorical('batch_size', [2048, 4096, 8192])
 
     # define the neighborhood sampling sizes based on the suggested number of GNN layers
-    n_layers = trial_params_dict['n_gnn_layers']
-    neighbors_list = [15] + [10] * (n_layers - 1)
+    n_layers = parameters['n_gnn_layers']
+    first_hop_neighbors = parameters['neighbors_first_hop']
+    subsequent_hop_neighbors = parameters['neighbors_subsequent_hops']
+    neighbors_list = [first_hop_neighbors] + [subsequent_hop_neighbors] * (n_layers - 1)
     
     # temporary config object using the suggested hyperparameters for this trial
     trial_config_obj = config.config(parameters.config_file_path)
