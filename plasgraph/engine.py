@@ -38,15 +38,15 @@ def objective(trial, accelerator, parameters, data, splits, labeled_indices):
 
     # use the 'trial' object to suggest hyperparameter values for Optuna to optimize
     trial_params_dict = parameters._params.copy()
-    trial_params_dict['l2_reg'] = trial.suggest_float("l2_reg", 1e-4, 1e-2, log=True)
-    trial_params_dict['n_channels'] = trial.suggest_int("n_channels", 16, 64, step=16)
-    trial_params_dict['n_gnn_layers'] = trial.suggest_int("n_gnn_layers", 4, 8)
+    trial_params_dict['l2_reg'] = trial.suggest_float("l2_reg", 1e-5, 1e-2, log=True)
+    trial_params_dict['n_channels'] = trial.suggest_int("n_channels", 16, 128, step=16)
+    trial_params_dict['n_gnn_layers'] = trial.suggest_int("n_gnn_layers", 4, 12)
     trial_params_dict['dropout_rate'] = trial.suggest_float("dropout_rate", 0.0, 0.3)
     trial_params_dict['gradient_clipping'] = trial.suggest_float("gradient_clipping", 0.0, 0.3)
     trial_params_dict['edge_gate_hidden_dim'] = trial.suggest_int("edge_gate_hidden_dim", 16, 64, step=8)
     trial_params_dict['n_channels_preproc'] = trial.suggest_int("n_channels_preproc", 5, 15, step=5)
     trial_params_dict['edge_gate_depth'] = trial.suggest_int("edge_gate_depth", 2, 6)
-    trial_params_dict['batch_size'] = trial.suggest_categorical('batch_size', [2048, 4096, 8192])
+    trial_params_dict['batch_size'] = trial.suggest_categorical('batch_size', [4096, 8192, 16384])
 
     # define the neighborhood sampling sizes based on the suggested number of GNN layers
     n_layers = parameters['n_gnn_layers']
@@ -79,6 +79,8 @@ def objective(trial, accelerator, parameters, data, splits, labeled_indices):
 
         # Adam optimizer with the trial's learning rate and L2 regularization
         optimizer = torch.optim.Adam(model.parameters(), lr=trial_config_obj['learning_rate'], weight_decay=trial_config_obj['l2_reg'])
+        # learning rate scheduler to reduce the learning rate on validation loss plateau
+        scheduler = ReduceLROnPlateau(optimizer, 'min', factor=trial_config_obj['scheduler_factor'], patience=trial_config_obj['scheduler_patience'])
         # loss function
         criterion = torch.nn.BCEWithLogitsLoss()
 
@@ -134,6 +136,7 @@ def objective(trial, accelerator, parameters, data, splits, labeled_indices):
             
             # calculate the average validation loss for the epoch
             avg_val_loss = total_val_loss / len(val_loader)
+            scheduler.step(avg_val_loss)
 
             # check for improvement in validation loss for early stopping
             if avg_val_loss < best_val_loss_for_fold:
@@ -248,6 +251,7 @@ def train_final_model(parameters, data, splits, labeled_indices, log_dir, G, nod
             model = GGNNModel(parameters).to(device)
 
         optimizer = optim.Adam(model.parameters(), lr=parameters['learning_rate'], weight_decay=parameters['l2_reg'])
+        scheduler = ReduceLROnPlateau(optimizer, 'min', factor=parameters['scheduler_factor'], patience=parameters['scheduler_patience'], verbose=True)
         criterion = torch.nn.BCEWithLogitsLoss()
 
         # on MPS, move data to CPU for the loader. On CUDA, this does nothing
@@ -286,6 +290,8 @@ def train_final_model(parameters, data, splits, labeled_indices, log_dir, G, nod
         
         train_losses_fold, val_losses_fold = [], []
 
+        plot_frequency = max(1, parameters["epochs"] // 10)
+
         for epoch in range(parameters["epochs"]):
             model.train()
             total_train_loss = 0
@@ -302,7 +308,7 @@ def train_final_model(parameters, data, splits, labeled_indices, log_dir, G, nod
             # gradient magnitude plotting (first fold only)
             if fold_idx == 0: 
                 grad_data = utils.get_gradient_magnitudes(model)
-                utils.plot_gradient_magnitudes(grad_data, epoch + 1, cv_plots_dir)
+                utils.plot_gradient_magnitudes(grad_data, epoch + 1, cv_plots_dir, plot_frequency=plot_frequency)
             
             avg_train_loss = total_train_loss / len(train_loader)
             train_losses_fold.append(avg_train_loss)
@@ -319,6 +325,8 @@ def train_final_model(parameters, data, splits, labeled_indices, log_dir, G, nod
             
             avg_val_loss = total_val_loss / len(val_loader)
             val_losses_fold.append(avg_val_loss)
+
+            scheduler.step(avg_val_loss)
 
             if (epoch + 1) % 10 == 0 or (epoch + 1) == parameters["epochs"]:
                 print(f"Epoch {epoch + 1}/{parameters['epochs']} | Train Loss: {avg_train_loss:.4f} | Val Loss: {avg_val_loss:.4f}")

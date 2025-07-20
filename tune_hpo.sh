@@ -3,7 +3,7 @@
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
 #SBATCH --gpus=1
-#SBATCH --time=06:00:00
+#SBATCH --time=08:00:00
 
 source $(conda info --base)/etc/profile.d/conda.sh
 conda activate plasgrpah

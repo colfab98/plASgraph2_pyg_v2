@@ -2,6 +2,7 @@
 
 import argparse
 import os
+import shutil
 import yaml
 import numpy as np
 import torch
@@ -54,6 +55,8 @@ def main():
 
     # directory for logs related to the final model training
     log_dir = os.path.join(args.model_output_dir, "final_training_logs")
+    if os.path.exists(log_dir):
+        shutil.rmtree(log_dir)
     os.makedirs(log_dir, exist_ok=True)
 
     # dummy accelerator to pass to the data loader

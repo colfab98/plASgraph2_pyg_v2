@@ -12,4 +12,5 @@ PYTHONUNBUFFERED=1 python -m scripts.train \
     plasgraph2-datasets/eskapee-train.csv \
     plasgraph2-datasets/ \
     output/ESKAPEE_final_model/ \
+    --training_mode single-fold \
     > output/train.log 2> output/train.err
