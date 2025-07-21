@@ -30,6 +30,7 @@ PARAMS = [
     {'name': 'edge_gate_hidden_dim', 'type': int, 'default': 32}, # for GGNNModel, this sets the hidden dimension of the neural network that computes edge weights
     {'name': 'edge_gate_depth', 'type': int, 'default': 3}, # for GGNNModel, this sets the number of layers in the edge gating network.
     {'name': 'use_GraphNorm', 'type': bool, 'default': True}, # whether to use GraphNorm for normalizing node features within each graph in a batch
+    {'name': 'use_gru_update', 'type': bool, 'default': True}, # whether to use GRU-style update for the node features; if False, uses a simple linear transformation
 
 
     # Training and Optimization Parameters

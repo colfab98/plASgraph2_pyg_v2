@@ -99,6 +99,7 @@ class GGNNConv(MessagePassing):
         activation = parameters['gcn_activation']
         dropout_rate = parameters['dropout_rate']
         self.use_edge_gate = parameters['use_edge_gate']
+        self.use_gru_update = parameters['use_gru_update']
 
         self.in_channels = in_channels
         self.out_channels = out_channels
@@ -124,12 +125,16 @@ class GGNNConv(MessagePassing):
         gate_layers.append(nn.Linear(edge_gate_hidden_dim, 1))
         self.edge_gate_network = nn.Sequential(*gate_layers)
 
-        # update step 'z'
-        self.lin_z = nn.Linear(in_channels + out_channels, out_channels) 
-        # reset gate 'r'
-        self.lin_r = nn.Linear(in_channels + out_channels, out_channels) 
-        # candidate hidden state 'h_candidate'
-        self.lin_h = nn.Linear(in_channels + out_channels, out_channels) 
+        if self.use_gru_update:
+            # update step 'z'
+            self.lin_z = nn.Linear(in_channels + out_channels, out_channels) 
+            # reset gate 'r'
+            self.lin_r = nn.Linear(in_channels + out_channels, out_channels) 
+            # candidate hidden state 'h_candidate'
+            self.lin_h = nn.Linear(in_channels + out_channels, out_channels) 
+        else:
+            self.lin_gcn_style = nn.Linear(in_channels, out_channels)
+
 
     def forward(self, x, edge_index, edge_attr=None): 
         """
@@ -200,26 +205,31 @@ class GGNNConv(MessagePassing):
         This function takes the aggregated messages from neighbors and the original
         node features to compute the new node representation.
         """
-        # concatenate the original node features (x) with the aggregated messages
-        z_input = torch.cat([x, aggr_out], dim=-1)
-        r_input = torch.cat([x, aggr_out], dim=-1)
-        
-        # calculate the update gate 'z' (determines how much of the old state to keep)
-        z = torch.sigmoid(self.lin_z(z_input)) 
-        # calculate the reset gate 'r' (determines how much of the old state to use for the new candidate)
-        r = torch.sigmoid(self.lin_r(r_input)) 
+        if self.use_gru_update:
+            # concatenate the original node features (x) with the aggregated messages
+            z_input = torch.cat([x, aggr_out], dim=-1)
+            r_input = torch.cat([x, aggr_out], dim=-1)
+            
+            # calculate the update gate 'z' (determines how much of the old state to keep)
+            z = torch.sigmoid(self.lin_z(z_input)) 
+            # calculate the reset gate 'r' (determines how much of the old state to use for the new candidate)
+            r = torch.sigmoid(self.lin_r(r_input)) 
 
-        # create the input for the candidate hidden state
-        h_candidate_input = torch.cat([r * x, aggr_out], dim=-1)
-        # calculate the candidate hidden state
-        h_candidate = self.lin_h(h_candidate_input)
-        # apply the main activation function
-        h_candidate = self.activation(h_candidate) 
+            # create the input for the candidate hidden state
+            h_candidate_input = torch.cat([r * x, aggr_out], dim=-1)
+            # calculate the candidate hidden state
+            h_candidate = self.lin_h(h_candidate_input)
+            # apply the main activation function
+            h_candidate = self.activation(h_candidate) 
 
-        # combine the old state and the new candidate state using the update gate 'z'
-        out = (1 - z) * x + z * h_candidate
-        # apply dropout for regularization
-        return self.dropout(out)
+            # combine the old state and the new candidate state using the update gate 'z'
+            out = (1 - z) * x + z * h_candidate
+            # apply dropout for regularization
+            return self.dropout(out)
+        else:
+            out = self.lin_gcn_style(aggr_out)
+            out = self.activation(out)
+            return self.dropout(out)
 
 
 class GGNNModel(torch.nn.Module):
@@ -236,6 +246,9 @@ class GGNNModel(torch.nn.Module):
         super().__init__()
         self._params = parameters
 
+        self.use_gcn_mode = not self['use_edge_gate'] and not self['use_gru_update']
+        self.gcn_activation = activation_map[self['gcn_activation']]
+
         # --- input preprocessing block ---
         # linear layer to project the raw input node features to a new dimension
         self.preproc = nn.Linear(self['n_input_features'], self['n_channels_preproc'])
@@ -244,10 +257,9 @@ class GGNNModel(torch.nn.Module):
         self.preproc_activation = activation_map[self['preproc_activation']]
 
         # --- initial node transformation ---
-        # linear layer to transform preprocessed features into the main hidden dimension for the GNN
-        self.initial_node_transform = nn.Linear(self['n_channels_preproc'], self['n_channels'])
-        # graph-aware normalization for the initial hidden states
-        self.norm_initial = GraphNorm(self['n_channels'])
+        
+        self.fc_input_1 = nn.Linear(self['n_channels_preproc'], self['n_channels'])
+        self.fc_input_2 = nn.Linear(self['n_channels_preproc'], self['n_channels'])
         self.fully_connected_activation = activation_map[self['fully_connected_activation']]
 
         # standard dropout layer for regularization
@@ -256,19 +268,36 @@ class GGNNModel(torch.nn.Module):
         # --- GGNN message passing layers ---
         # graph-aware normalization to be applied after each GNN layer
         self.norm_ggnn = GraphNorm(self['n_channels'])
-        # if 'tie_gnn_layers' is True, a single GGNN layer is created and its weights are shared across all steps
-        if self['tie_gnn_layers']:
-            self.ggnn_layer = GGNNConv(self['n_channels'],
-                                    self['n_channels'],
-                                    parameters=self._params)
-        # otherwise, create a list of unique GGNN layers
+
+        if self.use_gcn_mode:
+            # If we want to behave like GCNModel, use the actual GCNConv layer
+            if self['tie_gnn_layers']:
+                self.ggnn_layer = GCNConv(self['n_channels'], self['n_channels'])
+            else:
+                self.ggnn_layers = nn.ModuleList([
+                    GCNConv(self['n_channels'], self['n_channels'])
+                    for _ in range(self['n_gnn_layers'])
+                ])
         else:
-            self.ggnn_layers = nn.ModuleList([
-                GGNNConv(self['n_channels'],
-                        self['n_channels'],
-                        parameters=self._params)
+            if self['tie_gnn_layers']:
+                self.ggnn_layer = GGNNConv(self['n_channels'],
+                                        self['n_channels'],
+                                        parameters=self._params)
+            else:
+                self.ggnn_layers = nn.ModuleList([
+                    GGNNConv(self['n_channels'],
+                            self['n_channels'],
+                            parameters=self._params)
+                    for _ in range(self['n_gnn_layers'])
+                ])
+        if self['tie_gnn_layers']:
+            self.dense_layer = nn.Linear(self['n_channels'] * 2, self['n_channels'])
+        else:
+            self.dense_layers = nn.ModuleList([
+                nn.Linear(self['n_channels'] * 2, self['n_channels'])
                 for _ in range(self['n_gnn_layers'])
             ])
+
 
         # --- final prediction head ---
         # linear layer that takes the concatenated initial and final node embeddings
@@ -289,27 +318,38 @@ class GGNNModel(torch.nn.Module):
         x = self.norm_preproc(x, data.batch) if self['use_GraphNorm'] else x
         x = self.preproc_activation(x)
 
-        # apply the initial node transformation to get the first hidden state (h_0)
-        h_0 = self.initial_node_transform(x)
-        h_0 = self.norm_initial(h_0, data.batch) if self['use_GraphNorm'] else h_0
-        h_0 = self.fully_connected_activation(h_0) 
-        
-        # store the initial hidden state for the final skip connection
-        node_identity = h_0 
-
-        h = h_0 
+        node_identity = self.fully_connected_activation(self.fc_input_1(x))
+        h = self.fully_connected_activation(self.fc_input_2(x))
 
         # --- message passing loop ---
         for i in range(self['n_gnn_layers']):
-            # get the edge attributes for the current layer
-            current_edge_attr = data.edge_attr if hasattr(data, 'edge_attr') else None
-            # pass the hidden state through the GGNN layer
-            if self['tie_gnn_layers']:
-                h = self.ggnn_layer(h, edge_index, edge_attr=current_edge_attr) 
+            h = self.dropout(h)
+
+            if self.use_gcn_mode:
+                # Use GCNConv (no edge_attr) and apply activation externally
+                if self['tie_gnn_layers']:
+                    h = self.ggnn_layer(h, edge_index)
+                else:
+                    h = self.ggnn_layers[i](h, edge_index)
+                h = self.gcn_activation(h)
+
             else:
-                h = self.ggnn_layers[i](h, edge_index, edge_attr=current_edge_attr) 
-            # apply GraphNorm after each message passing step
-            h = self.norm_ggnn(h, data.batch) if self['use_GraphNorm'] else h
+                # get the edge attributes for the current layer
+                current_edge_attr = data.edge_attr if hasattr(data, 'edge_attr') else None
+                # pass the hidden state through the GGNN layer
+                if self['tie_gnn_layers']:
+                    h = self.ggnn_layer(h, edge_index, edge_attr=current_edge_attr) 
+                else:
+                    h = self.ggnn_layers[i](h, edge_index, edge_attr=current_edge_attr) 
+                    # apply GraphNorm after each message passing step
+                    h = self.norm_ggnn(h, data.batch) if self['use_GraphNorm'] else h
+
+            h = torch.cat([node_identity, h], dim=1)
+            h = self.dropout(h) # GCNModel has dropout here
+            if self['tie_gnn_layers']:
+                h = self.fully_connected_activation(self.dense_layer(h))
+            else:
+                h = self.fully_connected_activation(self.dense_layers[i](h))
 
         # --- prediction head ---
         # concatenate the initial node embeddings (skip connection) with the final GNN embeddings

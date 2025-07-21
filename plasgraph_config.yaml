@@ -21,8 +21,9 @@ neighbors_first_hop: 15
 neighbors_subsequent_hops: 10
 edge_gate_hidden_dim: 32
 edge_gate_depth: 3
-use_edge_gate: true
+use_edge_gate: false
 use_GraphNorm: false
+use_gru_update: false
 
 # Training and Optimization Parameters
 learning_rate: 0.001
