@@ -78,27 +78,35 @@ def main():
     node_list = all_graphs.node_list
 
     print(f"✅ Using model architecture: {parameters['model_type']}")
+    
+    
+    all_sample_ids = np.array(sorted(list(set(G.nodes[node_id]["sample"] for node_id in node_list))))
+    print(f"✅ Found {len(all_sample_ids)} unique samples for splitting.")
+
+    # Get indices of all nodes that have a label
     labeled_indices = np.array([i for i, node_id in enumerate(node_list) if G.nodes[node_id]["text_label"] != "unlabeled"])
 
     if args.training_mode == 'k-fold':
-        print(f"✅ Setting up {parameters['k_folds']}-fold cross-validation.")
+        print(f"✅ Setting up {parameters['k_folds']}-fold cross-validation based on samples.")
         kf = KFold(n_splits=parameters["k_folds"], shuffle=True, random_state=parameters["random_seed"])
-        splits = list(kf.split(labeled_indices))
-    else:
-        print("✅ Setting up single-fold training with an 80/20 train/validation split.")
-        # Create a single 80/20 split
-        train_idx, val_idx = train_test_split(
-            np.arange(len(labeled_indices)), # Split the indices of the labeled_indices array
+        # Create splits based on the indices of the sample IDs array
+        splits = list(kf.split(all_sample_ids))
+    else: # single-fold
+        print("✅ Setting up single-fold training with an 80/20 train/validation split based on samples.")
+        # Create a single 80/20 split of sample IDs
+        train_s_idx, val_s_idx = train_test_split(
+            np.arange(len(all_sample_ids)), # Split the indices of the sample_ids array
             test_size=0.2,
             random_state=parameters["random_seed"],
             shuffle=True
         )
         # The train_final_model function expects a list of splits
-        splits = [(train_idx, val_idx)]
+        splits = [(train_s_idx, val_s_idx)]
+
 
     # train the K-fold ensemble
     train_final_model(
-        parameters, data, splits, labeled_indices, log_dir, G, node_list
+        parameters, data, splits, all_sample_ids, labeled_indices, log_dir, G, node_list
     )
 
     # save the final base configuration file for future predictions
