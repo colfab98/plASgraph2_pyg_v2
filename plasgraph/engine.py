@@ -62,7 +62,8 @@ def objective(trial, accelerator, parameters, data, sample_splits, all_sample_id
     # move the graph data object to the correct device
     data = data.to(device)
 
-    unique_samples_from_graph = sorted(list(set(node_id.split(':')[0] for node_id in data.node_list)))
+    unique_samples_from_graph = sorted(list(set(node_id.split(':')[0] for node_id in node_list)))
+
     sample_to_batch_idx = {sample_id: i for i, sample_id in enumerate(unique_samples_from_graph)}
 
     fold_aurocs = []
@@ -93,7 +94,10 @@ def objective(trial, accelerator, parameters, data, sample_splits, all_sample_id
         train_fold_labeled_global = torch.tensor(sorted(list(train_nodes_global_set.intersection(labeled_nodes_set))), dtype=torch.long)
         val_fold_labeled_global = torch.tensor(sorted(list(val_nodes_global_set.intersection(labeled_nodes_set))), dtype=torch.long)
 
-        global_to_local_train_map = {global_idx.item(): local_idx for local_idx, global_idx in enumerate(train_data.n_id)}
+        global_to_local_train_map = {global_idx.item(): local_idx for local_idx, global_idx in enumerate(train_node_indices)}
+        
+        local_train_seed_indices = torch.tensor([global_to_local_train_map[global_idx.item()] for global_idx in train_fold_labeled_global], dtype=torch.long)
+
         local_train_seed_indices = torch.tensor([global_to_local_train_map[global_idx.item()] for global_idx in train_fold_labeled_global], dtype=torch.long)
 
         global_to_local_val_map = {global_idx.item(): local_idx for local_idx, global_idx in enumerate(val_data.n_id)}
@@ -118,7 +122,7 @@ def objective(trial, accelerator, parameters, data, sample_splits, all_sample_id
         # NeighborLoader for the training set of this fold
         train_loader = NeighborLoader(
             train_data,
-            input_nodes=local_train_seed_indices.to(device)
+            input_nodes=local_train_seed_indices.to(device),
             num_neighbors=neighbors_list,                                       # neighborhood sampling sizes
             shuffle=True,                                                       # shuffle the data at each epoch
             batch_size=trial_config_obj['batch_size'],                          # use the batch size suggested by Optuna
@@ -129,7 +133,7 @@ def objective(trial, accelerator, parameters, data, sample_splits, all_sample_id
         # NeighborLoader for the validation set of this fold
         val_loader = NeighborLoader(
             val_data,
-            input_nodes=local_val_seed_indices.to(device)
+            input_nodes=local_val_seed_indices.to(device),
             num_neighbors=neighbors_list,
             shuffle=False,                                                      # no need to shuffle validation data
             batch_size=trial_config_obj['batch_size'],
@@ -262,7 +266,7 @@ def train_final_model(parameters, data, sample_splits, all_sample_ids, labeled_i
     cv_plots_dir = os.path.join(log_dir, "cv_fold_plots")
     os.makedirs(cv_plots_dir, exist_ok=True)
 
-    unique_samples_from_graph = sorted(list(set(node_id.split(':')[0] for node_id in data.node_list)))
+    unique_samples_from_graph = sorted(list(set(node_id.split(':')[0] for node_id in node_list)))
     sample_to_batch_idx = {sample_id: i for i, sample_id in enumerate(unique_samples_from_graph)}
     labeled_nodes_set = set(labeled_indices)
 
@@ -293,7 +297,7 @@ def train_final_model(parameters, data, sample_splits, all_sample_ids, labeled_i
 
         train_nodes_global_set = set(train_node_indices.cpu().numpy())
         train_fold_labeled_global = torch.tensor(sorted(list(train_nodes_global_set.intersection(labeled_nodes_set))), dtype=torch.long)
-        global_to_local_train_map = {global_idx.item(): local_idx for local_idx, global_idx in enumerate(train_data.n_id)}
+        global_to_local_train_map = {global_idx.item(): local_idx for local_idx, global_idx in enumerate(train_node_indices)}
         local_train_seed_indices = torch.tensor([global_to_local_train_map[global_idx.item()] for global_idx in train_fold_labeled_global], dtype=torch.long)
 
         if parameters['model_type'] == 'GCNModel':

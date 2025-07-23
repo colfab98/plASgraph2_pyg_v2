@@ -3,7 +3,7 @@
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1  
 #SBATCH --gpus-per-task=1    
-#SBATCH --time=01:00:00
+#SBATCH --time=06:00:00
 
 PYTHONUNBUFFERED=1 python -m scripts.train \
     --data_cache_dir cache/eskapee-train/ \
@@ -12,5 +12,4 @@ PYTHONUNBUFFERED=1 python -m scripts.train \
     plasgraph2-datasets/eskapee-train.csv \
     plasgraph2-datasets/ \
     output/ESKAPEE_final_model/ \
-    --training_mode single-fold \
     > output/train.log 2> output/train.err

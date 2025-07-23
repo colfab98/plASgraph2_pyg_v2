@@ -258,9 +258,6 @@ class Dataset_Pytorch(InMemoryDataset):
         loaded_data = torch.load(self.processed_paths[0], weights_only=False)
         self.data, self.slices, self.G, self.node_list = loaded_data
 
-        if not hasattr(self.data, 'node_list'):
-            self.data.node_list = self.node_list
-
     # tells the InMemoryDataset framework what the final, cached file containing the processed data should be named
     @property
     def processed_file_names(self):
@@ -391,7 +388,6 @@ class Dataset_Pytorch(InMemoryDataset):
             batch=batch_tensor                                          # maps nodes to samples
         )
 
-        data.node_list = self.node_list
         
         # use the parent class's collate method to prepare the data for batching
         processed_data, slices = self.collate([data])
