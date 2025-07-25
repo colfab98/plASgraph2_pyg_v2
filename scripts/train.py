@@ -13,11 +13,12 @@ from plasgraph.data import Dataset_Pytorch
 from plasgraph.config import config as Config
 from plasgraph.engine import train_final_model
 
-# 💡 Define a dummy class to satisfy the Dataset_Pytorch constructor
-class DummyAccelerator:
-    """A mock class that mimics the accelerator.print() method for single-GPU execution."""
-    def print(self, message):
-        print(message)
+from contextlib import contextmanager
+from accelerate import Accelerator
+
+
+
+
 
 def main():
     """
@@ -27,8 +28,7 @@ def main():
     hyperparameter optimization has been completed. It performs the following steps:
     1. Loads a base configuration file and updates it with the best
        hyperparameters found during a previous optimization stage.
-    2. Initializes a `DummyAccelerator` to allow the use of the distributed-aware
-       `Dataset_Pytorch` class in a single-device environment.
+
     3. Loads and processes the training data into a graph format.
     4. Sets up k-fold cross-validation splits from the labeled training data.
     5. Calls the `train_final_model` engine, which iteratively trains a model for
@@ -53,23 +53,26 @@ def main():
         best_params = yaml.safe_load(f)
     parameters._params.update(best_params)
 
+    if isinstance(parameters['features'], str):
+        parameters._params['features'] = tuple(parameters['features'].split(','))
+
+
     # directory for logs related to the final model training
     log_dir = os.path.join(args.model_output_dir, "final_training_logs")
     if os.path.exists(log_dir):
         shutil.rmtree(log_dir)
     os.makedirs(log_dir, exist_ok=True)
 
-    # dummy accelerator to pass to the data loader
-    dummy_accelerator = DummyAccelerator()
+    accelerator = Accelerator()
 
     # load and process the training data
-    dummy_accelerator.print("✅ Loading data...")
+    accelerator.print("✅ Loading data...")
     all_graphs = Dataset_Pytorch(
         root=args.data_cache_dir,
         file_prefix=args.file_prefix,
         train_file_list=args.train_file_list,
         parameters=parameters,
-        accelerator=dummy_accelerator 
+        accelerator=accelerator 
     )
 
     # extract the graph data object, the NetworkX graph, and the node list
@@ -106,7 +109,7 @@ def main():
 
     # train the K-fold ensemble
     train_final_model(
-        parameters, data, splits, all_sample_ids, labeled_indices, log_dir, G, node_list
+        accelerator, parameters, data, splits, all_sample_ids, labeled_indices, log_dir, G, node_list
     )
 
     # save the final base configuration file for future predictions

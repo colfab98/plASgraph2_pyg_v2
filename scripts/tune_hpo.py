@@ -62,11 +62,16 @@ def main():
     os.makedirs(args.model_output_dir, exist_ok=True)
 
     # --- setup for cross-validation ---
-    # create a numpy array of node indices that have labels (are not 'unlabeled')
+    all_sample_ids = np.array(sorted(list(set(G.nodes[node_id]["sample"] for node_id in node_list))))
+    accelerator.print(f"✅ Found {len(all_sample_ids)} unique samples for splitting.")
+
+    # Get indices of all nodes that have a label
     labeled_indices = np.array([i for i, node_id in enumerate(node_list) if G.nodes[node_id]["text_label"] != "unlabeled"])
+
+    # Perform the K-Fold split on the sample IDs
     kf = KFold(n_splits=parameters["k_folds"], shuffle=True, random_state=parameters["random_seed"])
-    # generate the train/validation index splits for the labeled nodes
-    splits = list(kf.split(labeled_indices))
+    splits = list(kf.split(all_sample_ids))
+
 
     accelerator.print(f"Using device: {accelerator.device}")
 
@@ -113,7 +118,7 @@ def main():
 
     # start the optimization process
     study.optimize(
-        lambda trial: objective(trial, accelerator, parameters, data, splits, labeled_indices),
+        lambda trial: objective(trial, accelerator, parameters, data, splits, all_sample_ids, labeled_indices, node_list, G),
         n_trials=n_trials_per_process,
         show_progress_bar=accelerator.is_main_process
     )

@@ -28,7 +28,8 @@ import torch.profiler
 import torch.distributed as dist
 
 
-def objective(trial, accelerator, parameters, data, sample_splits, all_sample_ids, labeled_indices):
+def objective(trial, accelerator, parameters, data, sample_splits, all_sample_ids, labeled_indices, node_list, G):
+
     """
     Optuna objective function with K-fold cross-validation.
     """
@@ -39,20 +40,26 @@ def objective(trial, accelerator, parameters, data, sample_splits, all_sample_id
     # use the 'trial' object to suggest hyperparameter values for Optuna to optimize
     trial_params_dict = parameters._params.copy()
     trial_params_dict['l2_reg'] = trial.suggest_float("l2_reg", 1e-5, 1e-2, log=True)
-    trial_params_dict['n_channels'] = trial.suggest_int("n_channels", 16, 128, step=16)
-    trial_params_dict['n_gnn_layers'] = trial.suggest_int("n_gnn_layers", 4, 12)
+    trial_params_dict['n_channels'] = trial.suggest_int("n_channels", 16, 64, step=16)
+    trial_params_dict['n_gnn_layers'] = trial.suggest_int("n_gnn_layers", 4, 10)
     trial_params_dict['dropout_rate'] = trial.suggest_float("dropout_rate", 0.0, 0.3)
-    trial_params_dict['gradient_clipping'] = trial.suggest_float("gradient_clipping", 0.0, 0.3)
+    trial_params_dict['gradient_clipping'] = trial.suggest_float("gradient_clipping", 0.1, 10.0, log=True)
     trial_params_dict['edge_gate_hidden_dim'] = trial.suggest_int("edge_gate_hidden_dim", 16, 64, step=8)
     trial_params_dict['n_channels_preproc'] = trial.suggest_int("n_channels_preproc", 5, 15, step=5)
     trial_params_dict['edge_gate_depth'] = trial.suggest_int("edge_gate_depth", 2, 6)
-    trial_params_dict['batch_size'] = trial.suggest_categorical('batch_size', [4096, 8192, 16384])
+    # trial_params_dict['batch_size'] = trial.suggest_categorical('batch_size', [32, 64, 256, 2048])
+    trial_params_dict['batch_size'] = trial.suggest_categorical('batch_size', [10000])
+    first_hop_val = trial.suggest_int("neighbors_first_hop", 8, 64, step=4)
+    trial_params_dict['first_hop_neighbors'] = first_hop_val
+    trial_params_dict['subsequent_hop_neighbors'] = trial.suggest_int("neighbors_subsequent_hops", 4, first_hop_val, step=2)
 
-    # define the neighborhood sampling sizes based on the suggested number of GNN layers
-    n_layers = parameters['n_gnn_layers']
-    first_hop_neighbors = parameters['neighbors_first_hop']
-    subsequent_hop_neighbors = parameters['neighbors_subsequent_hops']
+    trial_params_dict['learning_rate'] = trial.suggest_float("learning_rate", 1e-3, 1e-1, log=True)
+
+    n_layers = trial_params_dict['n_gnn_layers']
+    first_hop_neighbors = trial_params_dict['first_hop_neighbors']
+    subsequent_hop_neighbors = trial_params_dict['subsequent_hop_neighbors']
     neighbors_list = [first_hop_neighbors] + [subsequent_hop_neighbors] * (n_layers - 1)
+
     
     # temporary config object using the suggested hyperparameters for this trial
     trial_config_obj = config.config(parameters.config_file_path)
@@ -95,13 +102,11 @@ def objective(trial, accelerator, parameters, data, sample_splits, all_sample_id
         val_fold_labeled_global = torch.tensor(sorted(list(val_nodes_global_set.intersection(labeled_nodes_set))), dtype=torch.long)
 
         global_to_local_train_map = {global_idx.item(): local_idx for local_idx, global_idx in enumerate(train_node_indices)}
-        
-        local_train_seed_indices = torch.tensor([global_to_local_train_map[global_idx.item()] for global_idx in train_fold_labeled_global], dtype=torch.long)
+        global_to_local_val_map = {global_idx.item(): local_idx for local_idx, global_idx in enumerate(val_node_indices)}
 
         local_train_seed_indices = torch.tensor([global_to_local_train_map[global_idx.item()] for global_idx in train_fold_labeled_global], dtype=torch.long)
-
-        global_to_local_val_map = {global_idx.item(): local_idx for local_idx, global_idx in enumerate(val_data.n_id)}
         local_val_seed_indices = torch.tensor([global_to_local_val_map[global_idx.item()] for global_idx in val_fold_labeled_global], dtype=torch.long)
+
 
         if len(local_train_seed_indices) == 0 or len(local_val_seed_indices) == 0:
             continue
@@ -154,7 +159,7 @@ def objective(trial, accelerator, parameters, data, sample_splits, all_sample_id
                 batch = batch.to(device)                    # move the current mini-batch to the device
                 optimizer.zero_grad()                       # clear gradients from the previous step
                 outputs = model(batch)                      # perform a forward pass on the mini-batch
-                loss = criterion(outputs, batch.y)          # calculate the loss on the mini-batch
+                loss = criterion(outputs[:batch.batch_size], batch.y[:batch.batch_size])
                 loss.backward()                             # perform backpropagation to compute gradients
                 fix_gradients(trial_config_obj, model)      # apply gradient clipping/fixing
                 optimizer.step()                            # update the model weights
@@ -166,7 +171,7 @@ def objective(trial, accelerator, parameters, data, sample_splits, all_sample_id
                 for batch in val_loader:
                     batch = batch.to(device)
                     outputs = model(batch)
-                    val_loss = criterion(outputs, batch.y)
+                    val_loss = criterion(outputs[:batch.batch_size], batch.y[:batch.batch_size])
                     total_val_loss += val_loss.item()
             
             # calculate the average validation loss for the epoch
@@ -186,6 +191,7 @@ def objective(trial, accelerator, parameters, data, sample_splits, all_sample_id
             
 
         # --- final evaluation for the fold ---
+
         if best_model_state_for_fold is not None:
             if trial_config_obj['model_type'] == 'GCNModel':
                 inference_model = GCNModel(trial_config_obj).to(device)
@@ -195,49 +201,45 @@ def objective(trial, accelerator, parameters, data, sample_splits, all_sample_id
             # load the best model state found during training
             inference_model.load_state_dict(best_model_state_for_fold)
             inference_model.eval() 
-            
-            # get predictions (probabilities) on the entire validation set for this fold
-            all_probs, all_true = [], []
+
+            all_probs_fold, all_true_fold = [], []
             with torch.no_grad():
                 for batch in val_loader:
-                    batch = batch.to(device) 
+                    batch = batch.to(device)
                     outputs = inference_model(batch)
-                    all_probs.append(torch.sigmoid(outputs))
-                    all_true.append(batch.y)
+                    all_probs_fold.append(torch.sigmoid(outputs[:batch.batch_size]))
+                    all_true_fold.append(batch.y[:batch.batch_size])
+
+            if not all_probs_fold:
+                continue
             
-            # concatenate batch results into single numpy arrays
-            y_probs_fold = torch.cat(all_probs).cpu().numpy()
-            y_true_fold = torch.cat(all_true).cpu().numpy()
+            y_probs_fold = torch.cat(all_probs_fold).cpu()
+            y_true_fold = torch.cat(all_true_fold).cpu()
 
-            # calculate the AUROC score for both plasmid and chromosome predictions
-            auroc_plasmid = 0.5
-            auroc_chromosome = 0.5
-            # ensure there are both positive and negative samples before calculating AUROC
-            if len(np.unique(y_true_fold[:, 0])) > 1:
-                auroc_plasmid = roc_auc_score(y_true_fold[:, 0], y_probs_fold[:, 0])
-            if len(np.unique(y_true_fold[:, 1])) > 1:
-                auroc_chromosome = roc_auc_score(y_true_fold[:, 1], y_probs_fold[:, 1])
+            # --- MODIFIED: Simplified and robust AUROC calculation ---
+            auroc_p, auroc_c = 0.5, 0.5 # Default to 0.5 if calculation is not possible
 
-            # calculate the average AUROC for the fold
-            avg_auroc_for_fold = (auroc_plasmid + auroc_chromosome) / 2.0
+            # Plasmid AUROC
+            y_true_p = y_true_fold[:, 0].numpy()
+            y_probs_p = y_probs_fold[:, 0].numpy()
+            if len(np.unique(y_true_p)) > 1:
+                auroc_p = roc_auc_score(y_true_p, y_probs_p)
+
+            # Chromosome AUROC
+            y_true_c = y_true_fold[:, 1].numpy()
+            y_probs_c = y_probs_fold[:, 1].numpy()
+            if len(np.unique(y_true_c)) > 1:
+                auroc_c = roc_auc_score(y_true_c, y_probs_c)
+
+            # Average AUROC for the fold
+            avg_auroc_for_fold = (auroc_p + auroc_c) / 2.0
             fold_aurocs.append(avg_auroc_for_fold)
-        else:
-            fold_aurocs.append(0.0)
-
-        # report the median of the AUROCs collected so far to Optuna's pruner
-        trial.report(np.median(fold_aurocs), fold_idx)
-        # check if the pruner suggests stopping this trial early
-        if trial.should_prune():
-            raise optuna.exceptions.TrialPruned()
-
-    # after all folds are complete, calculate the final score for the trial
-    # the median AUROC across all folds is used as the robust performance metric
-    average_auroc = np.median(fold_aurocs)
-    return average_auroc
 
 
 
-def train_final_model(parameters, data, sample_splits, all_sample_ids, labeled_indices, log_dir, G, node_list):
+
+
+def train_final_model(accelerator, parameters, data, sample_splits, all_sample_ids, labeled_indices, log_dir, G, node_list):
     
     """
     Trains K-fold models on a single GPU and saves each one for ensembling.
@@ -247,14 +249,7 @@ def train_final_model(parameters, data, sample_splits, all_sample_ids, labeled_i
     print("💾 Training K-Fold Ensemble Models (Single-GPU)")
     print("="*60)
 
-    # determine the device
-    if torch.cuda.is_available():
-        device = torch.device("cuda")
-    elif torch.backends.mps.is_available():
-        device = torch.device("mps")
-    else:
-        device = torch.device("cpu")
-    print(f"Using device: {device}")
+    device = accelerator.device
     data = data.to(device)
 
     # create a directory to store the trained model files for the ensemble
@@ -296,9 +291,17 @@ def train_final_model(parameters, data, sample_splits, all_sample_ids, labeled_i
         print(f"  Train samples: {len(train_samples)}, Nodes: {train_data.num_nodes} | Val samples: {len(val_samples)}, Nodes: {val_data.num_nodes}")
 
         train_nodes_global_set = set(train_node_indices.cpu().numpy())
+        val_nodes_global_set = set(val_node_indices.cpu().numpy())
+
         train_fold_labeled_global = torch.tensor(sorted(list(train_nodes_global_set.intersection(labeled_nodes_set))), dtype=torch.long)
+        val_fold_labeled_global = torch.tensor(sorted(list(val_nodes_global_set.intersection(labeled_nodes_set))), dtype=torch.long)
+
         global_to_local_train_map = {global_idx.item(): local_idx for local_idx, global_idx in enumerate(train_node_indices)}
+        global_to_local_val_map = {global_idx.item(): local_idx for local_idx, global_idx in enumerate(val_node_indices)}
+
         local_train_seed_indices = torch.tensor([global_to_local_train_map[global_idx.item()] for global_idx in train_fold_labeled_global], dtype=torch.long)
+        local_val_seed_indices = torch.tensor([global_to_local_val_map[global_idx.item()] for global_idx in val_fold_labeled_global], dtype=torch.long)
+
 
         if parameters['model_type'] == 'GCNModel':
             model = GCNModel(parameters).to(device)
@@ -309,14 +312,7 @@ def train_final_model(parameters, data, sample_splits, all_sample_ids, labeled_i
         scheduler = ReduceLROnPlateau(optimizer, 'min', factor=parameters['scheduler_factor'], patience=parameters['scheduler_patience'], verbose=True)
         criterion = torch.nn.BCEWithLogitsLoss()
 
-        # on MPS, move data to CPU for the loader. On CUDA, this does nothing
-        data = data.to('cpu') if device.type == 'mps' else data
-
-        # If on Mac/MPS, disable multiprocessing in DataLoader to prevent crash.
-        # On HPC (CUDA), the original num_workers from config will be used.
         num_workers = parameters['num_workers']
-        if device.type == 'mps':
-            num_workers = 0
 
         train_loader = NeighborLoader(
             train_data,
@@ -330,7 +326,7 @@ def train_final_model(parameters, data, sample_splits, all_sample_ids, labeled_i
 
         val_loader = NeighborLoader(
             val_data,
-            input_nodes=None,
+            input_nodes=local_val_seed_indices.to(device),
             num_neighbors=neighbors_list,
             shuffle=False,
             batch_size=parameters['batch_size'],
@@ -350,7 +346,7 @@ def train_final_model(parameters, data, sample_splits, all_sample_ids, labeled_i
                 batch = batch.to(device)
                 optimizer.zero_grad()
                 outputs = model(batch)
-                loss = criterion(outputs, batch.y)
+                loss = criterion(outputs[:batch.batch_size], batch.y[:batch.batch_size])
                 loss.backward()
                 utils.fix_gradients(parameters, model)
                 optimizer.step()
@@ -368,7 +364,7 @@ def train_final_model(parameters, data, sample_splits, all_sample_ids, labeled_i
                 for batch in val_loader:
                     batch = batch.to(device)
                     outputs = model(batch)
-                    val_loss = criterion(outputs, batch.y)
+                    val_loss = criterion(outputs[:batch.batch_size], batch.y[:batch.batch_size])
                     total_val_loss += val_loss.item()
             
             avg_val_loss = total_val_loss / len(val_loader) if len(val_loader) > 0 else 0
@@ -413,8 +409,9 @@ def train_final_model(parameters, data, sample_splits, all_sample_ids, labeled_i
                 for batch in val_loader:
                     batch = batch.to(device)
                     outputs = inference_model(batch)
-                    all_probs_val.append(torch.sigmoid(outputs))
-                    all_true_val.append(batch.y)
+                    all_probs_val.append(torch.sigmoid(outputs[:batch.batch_size]))
+                    all_true_val.append(batch.y[:batch.batch_size])
+
             
             y_probs_val_fold = torch.cat(all_probs_val).cpu()
             y_true_val_fold = torch.cat(all_true_val).cpu()
@@ -438,11 +435,12 @@ def train_final_model(parameters, data, sample_splits, all_sample_ids, labeled_i
             raw_probs_full = torch.zeros_like(data.y, dtype=torch.float, device='cpu')
             final_scores_full = torch.zeros_like(data.y, dtype=torch.float, device='cpu')
 
-            raw_probs_full.scatter_(0, val_node_indices_global.unsqueeze(1).expand(-1, 2), y_probs_val_fold)
-            final_scores_full.scatter_(0, val_node_indices_global.unsqueeze(1).expand(-1, 2), final_scores_val_fold)
+            raw_probs_full.scatter_(0, val_fold_labeled_global.cpu().unsqueeze(1).expand(-1, 2), y_probs_val_fold)
+            final_scores_full.scatter_(0, val_fold_labeled_global.cpu().unsqueeze(1).expand(-1, 2), final_scores_val_fold)
+
 
             masks_validate = torch.zeros(data.num_nodes, dtype=torch.float32, device='cpu')
-            masks_validate[val_node_indices_global] = 1.0
+            masks_validate[val_fold_labeled_global] = 1.0
 
             calculate_and_print_metrics(final_scores_full.to(device), raw_probs_full.to(device), data, masks_validate.to(device), G, node_list, verbose=False)
 

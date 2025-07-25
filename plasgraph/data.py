@@ -69,7 +69,7 @@ class EvoFeatureGenerator:
         # load the tokenizer specific to the chosen Evo model from Hugging Face
         self.tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
         # load the base Evo model (BertModel) to get the raw hidden states
-        self.model = BertModel.from_pretrained(model_name, trust_remote_code=True)
+        self.model = BertModel.from_pretrained(model_name, trust_remote_code=True, use_safetensors=True)
         # get the size of the embeddings
         self.embedding_dim = self.model.config.hidden_size
         # prepare the model for the appropriate device (CPU/GPU) using the Accelerator
