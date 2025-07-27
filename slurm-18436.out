@@ -1,0 +1,6 @@
+
+EnvironmentNameNotFound: Could not find conda environment: plasgrpah
+You can list all discoverable environments with `conda info --envs`.
+
+
+slurmstepd: error: *** JOB 18436 ON sv1224 CANCELLED AT 2025-07-25T18:33:59 ***

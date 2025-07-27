@@ -253,7 +253,7 @@ class GGNNModel(torch.nn.Module):
         # linear layer to project the raw input node features to a new dimension
         self.preproc = nn.Linear(self['n_input_features'], self['n_channels_preproc'])
         # graph-aware batch normalization layer
-        self.norm_preproc = GraphNorm(self['n_channels_preproc'])
+        self.norm_preproc = nn.LayerNorm(self['n_channels_preproc'])
         self.preproc_activation = activation_map[self['preproc_activation']]
 
         # --- initial node transformation ---
@@ -267,7 +267,7 @@ class GGNNModel(torch.nn.Module):
 
         # --- GGNN message passing layers ---
         # graph-aware normalization to be applied after each GNN layer
-        self.norm_ggnn = GraphNorm(self['n_channels'])
+        self.norm_ggnn = nn.LayerNorm(self['n_channels'])
 
         if self.use_gcn_mode:
             # If we want to behave like GCNModel, use the actual GCNConv layer
@@ -302,7 +302,7 @@ class GGNNModel(torch.nn.Module):
         # --- final prediction head ---
         # linear layer that takes the concatenated initial and final node embeddings
         self.final_fc1 = nn.Linear(self['n_channels'] * 2, self['n_channels']) 
-        self.norm_final_fc1 = GraphNorm(self['n_channels'])
+        self.norm_final_fc1 = nn.LayerNorm(self['n_channels'])
         # final output layer that produces 2 logits (for plasmid and chromosome classes)
         self.final_fc2 = nn.Linear(self['n_channels'], 2)
 
@@ -315,7 +315,7 @@ class GGNNModel(torch.nn.Module):
         # apply the input preprocessing block
         x = self.preproc(x)
         # apply GraphNorm using the batch vector to normalize features on a per-graph basis
-        x = self.norm_preproc(x, data.batch) if self['use_GraphNorm'] else x
+        x = self.norm_preproc(x) if self['use_GraphNorm'] else x
         x = self.preproc_activation(x)
 
         node_identity = self.fully_connected_activation(self.fc_input_1(x))
@@ -342,7 +342,7 @@ class GGNNModel(torch.nn.Module):
                 else:
                     h = self.ggnn_layers[i](h, edge_index, edge_attr=current_edge_attr) 
                     # apply GraphNorm after each message passing step
-                    h = self.norm_ggnn(h, data.batch) if self['use_GraphNorm'] else h
+                    h = self.norm_ggnn(h) if self['use_GraphNorm'] else h
 
             h = torch.cat([node_identity, h], dim=1)
             h = self.dropout(h) # GCNModel has dropout here
@@ -359,7 +359,7 @@ class GGNNModel(torch.nn.Module):
         
         # pass through the first fully connected layer of the prediction head
         x = self.final_fc1(x) 
-        x = self.norm_final_fc1(x, data.batch) if self['use_GraphNorm'] else x
+        x = self.norm_final_fc1(x) if self['use_GraphNorm'] else x
         x = self.fully_connected_activation(x) 
 
         # apply dropout again before the final output layer

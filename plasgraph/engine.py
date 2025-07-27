@@ -47,8 +47,7 @@ def objective(trial, accelerator, parameters, data, sample_splits, all_sample_id
     trial_params_dict['edge_gate_hidden_dim'] = trial.suggest_int("edge_gate_hidden_dim", 16, 64, step=8)
     trial_params_dict['n_channels_preproc'] = trial.suggest_int("n_channels_preproc", 5, 15, step=5)
     trial_params_dict['edge_gate_depth'] = trial.suggest_int("edge_gate_depth", 2, 6)
-    # trial_params_dict['batch_size'] = trial.suggest_categorical('batch_size', [32, 64, 256, 2048])
-    trial_params_dict['batch_size'] = trial.suggest_categorical('batch_size', [10000])
+    trial_params_dict['batch_size'] = trial.suggest_categorical('batch_size', [512, 1024, 2048, 4096, 8192])
     first_hop_val = trial.suggest_int("neighbors_first_hop", 8, 64, step=4)
     trial_params_dict['first_hop_neighbors'] = first_hop_val
     trial_params_dict['subsequent_hop_neighbors'] = trial.suggest_int("neighbors_subsequent_hops", 4, first_hop_val, step=2)
@@ -235,6 +234,13 @@ def objective(trial, accelerator, parameters, data, sample_splits, all_sample_id
             avg_auroc_for_fold = (auroc_p + auroc_c) / 2.0
             fold_aurocs.append(avg_auroc_for_fold)
 
+            trial.report(avg_auroc_for_fold, fold_idx)
+            if trial.should_prune():
+                raise optuna.exceptions.TrialPruned()
+
+
+    final_objective_value = np.mean(fold_aurocs)
+    return final_objective_value
 
 
 
