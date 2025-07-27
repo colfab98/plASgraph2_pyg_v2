@@ -4,7 +4,8 @@ import yaml
 import numpy as np
 import optuna
 import torch
-from sklearn.model_selection import KFold
+from sklearn.model_selection import StratifiedKFold
+import pandas as pd
 
 from plasgraph.data import Dataset_Pytorch
 from plasgraph.config import config as Config
@@ -68,9 +69,37 @@ def main():
     # Get indices of all nodes that have a label
     labeled_indices = np.array([i for i, node_id in enumerate(node_list) if G.nodes[node_id]["text_label"] != "unlabeled"])
 
-    # Perform the K-Fold split on the sample IDs
-    kf = KFold(n_splits=parameters["k_folds"], shuffle=True, random_state=parameters["random_seed"])
-    splits = list(kf.split(all_sample_ids))
+    # --- Stratification Logic ---
+    if accelerator.is_main_process:
+        print("🔬 Analyzing sample characteristics for stratified splitting...")
+    sample_plasmid_ratios = []
+    for sample_id in all_sample_ids:
+        sample_nodes = [nid for nid in node_list if G.nodes[nid]["sample"] == sample_id]
+        
+        plasmid_count = 0
+        labeled_count = 0
+        for nid in sample_nodes:
+            if G.nodes[nid]["text_label"] != "unlabeled":
+                labeled_count += 1
+                if G.nodes[nid]["plasmid_label"] == 1 and G.nodes[nid]["chrom_label"] == 0:
+                    plasmid_count += 1
+        
+        ratio = plasmid_count / labeled_count if labeled_count > 0 else 0.0
+        sample_plasmid_ratios.append(ratio)
+
+    try:
+        stratification_y = pd.qcut(sample_plasmid_ratios, q=5, labels=False, duplicates='drop')
+    except ValueError:
+        stratification_y = pd.cut(sample_plasmid_ratios, bins=5, labels=False, duplicates='drop')
+
+    if accelerator.is_main_process:
+        print("  > Stratification groups created based on plasmid ratios.")
+
+
+    # Perform the Stratified K-Fold split on the sample IDs
+    skf = StratifiedKFold(n_splits=parameters["k_folds"], shuffle=True, random_state=parameters["random_seed"])
+    splits = list(skf.split(all_sample_ids, stratification_y))
+
 
 
     accelerator.print(f"Using device: {accelerator.device}")

@@ -125,6 +125,10 @@ class GGNNConv(MessagePassing):
         gate_layers.append(nn.Linear(edge_gate_hidden_dim, 1))
         self.edge_gate_network = nn.Sequential(*gate_layers)
 
+        # with torch.no_grad():
+        #     self.edge_gate_network[-1].bias.fill_(-1.0)
+
+
         if self.use_gru_update:
             # update step 'z'
             self.lin_z = nn.Linear(in_channels + out_channels, out_channels) 

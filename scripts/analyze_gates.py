@@ -19,10 +19,12 @@ from plasgraph.models import GGNNModel, activation_map # Import original GGNN fo
 from plasgraph.utils import pair_to_label
 
 class DummyAccelerator:
-    """A mock class that satisfies the Dataset_Pytorch constructor."""
+    """A mock class to satisfy the Dataset_Pytorch constructor."""
     def __init__(self):
-        # In a real scenario, this would be a real device
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        # Add num_processes attribute for compatibility with Dataset_Pytorch
+        self.num_processes = 1
+        self.is_main_process = True
 
     def print(self, message):
         print(message)
@@ -33,33 +35,26 @@ DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # ==============================================================================
 # 1. SPECIALIZED MODEL FOR ANALYSIS
-# We create a new set of classes that inherit from the originals but are
-# modified to capture and return the internal gate values during a forward pass.
 # ==============================================================================
 
 class AnalyzableGGNNConv(MessagePassing):
     """A modified GGNNConv layer that stores gate values during message passing."""
-    def __init__(self, in_channels, out_channels, parameters, activation, dropout_rate, edge_gate_hidden_dim):
+    def __init__(self, in_channels, out_channels, parameters):
         super().__init__(aggr='add')
         self.in_channels = in_channels
         self.out_channels = out_channels
-        self.activation = activation_map[activation]
-        self.dropout = nn.Dropout(dropout_rate)
+        self.activation = activation_map[parameters['gcn_activation']]
+        self.dropout = nn.Dropout(parameters['dropout_rate'])
         edge_gate_input_dim = in_channels * 2 + 1
         edge_gate_hidden_dim = parameters['edge_gate_hidden_dim']
         edge_gate_depth = parameters['edge_gate_depth'] 
 
         gate_layers = []
-        # Input layer
         gate_layers.append(nn.Linear(edge_gate_input_dim, edge_gate_hidden_dim))
         gate_layers.append(nn.ReLU())
-
-        # Hidden layers (if edge_gate_depth > 1)
         for _ in range(edge_gate_depth - 1):
             gate_layers.append(nn.Linear(edge_gate_hidden_dim, edge_gate_hidden_dim))
             gate_layers.append(nn.ReLU())
-
-        # Output layer
         gate_layers.append(nn.Linear(edge_gate_hidden_dim, 1))
 
         self.edge_gate_network = nn.Sequential(*gate_layers)
@@ -77,7 +72,6 @@ class AnalyzableGGNNConv(MessagePassing):
         deg_inv_sqrt[deg_inv_sqrt == float('inf')] = 0
         norm = deg_inv_sqrt[row] * deg_inv_sqrt[col]
         
-        # This is the main propagation call that triggers message() and update()
         return self.propagate(edge_index_with_self_loops, x=x, norm=norm, edge_attr=edge_attr_with_self_loops)
 
     def message(self, x_i, x_j, norm, edge_attr):
@@ -90,7 +84,6 @@ class AnalyzableGGNNConv(MessagePassing):
         edge_gate_logit = self.edge_gate_network(edge_gate_input)
         edge_gate_value = torch.sigmoid(edge_gate_logit)
         
-        # --- HOOK: This is where we store the gate value for analysis ---
         if hasattr(self, '_gate_storage'):
             self._gate_storage.append(edge_gate_value.detach())
             
@@ -115,20 +108,18 @@ class AnalyzableGGNNModel(GGNNModel):
     and provides a method to perform a forward pass while capturing gate values.
     """
     def __init__(self, parameters):
-        # First, call the original __init__ to build the model structure
         super().__init__(parameters)
         
-        # Now, overwrite the GGNN layers with our analyzable version
+        # Overwrite the GGNN layers with our analyzable version
+        # This assumes the model uses edge gates; the script is named analyze_gates
         if self['tie_gnn_layers']:
             self.ggnn_layer = AnalyzableGGNNConv(
-                self['n_channels'], self['n_channels'], parameters=parameters, activation=self['gcn_activation'],
-                dropout_rate=self['dropout_rate'], edge_gate_hidden_dim=self['edge_gate_hidden_dim']
+                self['n_channels'], self['n_channels'], parameters=parameters
             )
         else:
             self.ggnn_layers = nn.ModuleList([
                 AnalyzableGGNNConv(
-                    self['n_channels'], self['n_channels'], parameters=parameters, activation=self['gcn_activation'],
-                    dropout_rate=self['dropout_rate'], edge_gate_hidden_dim=self['edge_gate_hidden_dim']
+                    self['n_channels'], self['n_channels'], parameters=parameters
                 ) for _ in range(self['n_gnn_layers'])
             ])
 
@@ -139,44 +130,51 @@ class AnalyzableGGNNModel(GGNNModel):
         gate_data_per_layer = []
 
         # --- Manual forward pass to capture intermediate states ---
-        x, edge_index, batch = data.x, data.edge_index, data.batch
-        
+        # This now mirrors GGNNModel.forward() from models.py
+        x, edge_index, edge_attr = data.x, data.edge_index, data.edge_attr
+
         x = self.preproc(x)
-        x = self.norm_preproc(x, batch)
+        if self['use_GraphNorm']:
+            # CORRECTED: LayerNorm does not take a batch argument
+            x = self.norm_preproc(x)
         x = self.preproc_activation(x)
-        h_0 = self.fully_connected_activation(self.norm_initial(self.initial_node_transform(x), batch))
-        
-        h = h_0
+
+        # CORRECTED: Aligned with the actual model's forward pass
+        node_identity = self.fully_connected_activation(self.fc_input_1(x))
+        h = self.fully_connected_activation(self.fc_input_2(x))
+
         for i in range(self['n_gnn_layers']):
-            current_layer = self.ggnn_layers[i] if not self['tie_gnn_layers'] else self.ggnn_layer
+            h = self.dropout(h)
             
-            # Attach a temporary storage list to the layer for this pass
+            # Determine the current GNN and dense layers (handles tied weights)
+            current_layer = self.ggnn_layer if self['tie_gnn_layers'] else self.ggnn_layers[i]
+            current_dense = self.dense_layer if self['tie_gnn_layers'] else self.dense_layers[i]
+
             current_layer._gate_storage = []
+            h = current_layer(h, edge_index, edge_attr=edge_attr)
             
-            # Execute the forward pass for this layer, which will populate the storage
-            h = current_layer(h, edge_index, edge_attr=data.edge_attr)
-            
-            # --- Process the captured gate values ---
             gate_values_tensor = torch.cat(current_layer._gate_storage)
-            
-            # We need the edge_index that includes self-loops, as that's what propagate uses
             edge_index_sl, edge_attr_sl = add_self_loops(
-                edge_index, edge_attr=data.edge_attr, num_nodes=data.num_nodes, fill_value=1.
+                edge_index, edge_attr=edge_attr, num_nodes=data.num_nodes, fill_value=1.
             )
 
             df = pd.DataFrame({
                 'source_idx': edge_index_sl[0].cpu().numpy(),
                 'target_idx': edge_index_sl[1].cpu().numpy(),
-                'edge_attr': edge_attr_sl.squeeze(-1).cpu().numpy(),
+                'edge_attr': edge_attr_sl.squeeze(-1).cpu().numpy() if edge_attr_sl is not None else 0,
                 'gate_value': gate_values_tensor.squeeze(-1).cpu().numpy()
             })
             gate_data_per_layer.append(df)
             
-            # Clean up the storage hook
             delattr(current_layer, '_gate_storage')
 
-            # Continue the forward pass
-            h = self.norm_ggnn(h, batch)
+            # Continue the forward pass, mirroring the original model
+            if self['use_GraphNorm']:
+                h = self.norm_ggnn(h)
+            
+            h = torch.cat([node_identity, h], dim=1)
+            h = self.dropout(h) # Dropout is applied here in the original model
+            h = self.fully_connected_activation(current_dense(h))
             
         return gate_data_per_layer
 
@@ -188,7 +186,6 @@ class AnalyzableGGNNModel(GGNNModel):
 def create_plots(df, layer_num, output_dir):
     """Generates and saves a set of plots for a layer's gate data."""
     
-    # --- Plot 1: Histogram of Gate Values ---
     plt.figure(figsize=(10, 6))
     sns.histplot(df['gate_value'], bins=50, kde=True)
     plt.title(f'Layer {layer_num}: Distribution of Edge Gate Values')
@@ -198,9 +195,7 @@ def create_plots(df, layer_num, output_dir):
     plt.savefig(os.path.join(output_dir, f'gate_dist_layer_{layer_num}.png'))
     plt.close()
 
-    # --- Plot 2: Scatter Plot of Gate Value vs. Edge Attribute ---
     plt.figure(figsize=(10, 6))
-    # Sample to avoid overplotting if there are too many points
     sample_df = df.sample(n=min(5000, len(df)))
     sns.scatterplot(data=sample_df, x='edge_attr', y='gate_value', alpha=0.5, s=10)
     plt.title(f'Layer {layer_num}: Gate Value vs. Edge Attribute')
@@ -210,7 +205,6 @@ def create_plots(df, layer_num, output_dir):
     plt.savefig(os.path.join(output_dir, f'gate_vs_attr_layer_{layer_num}.png'))
     plt.close()
 
-    # --- Plot 3: Boxplot by Connection Type ---
     if 'connection_type' in df.columns:
         plt.figure(figsize=(12, 7))
         order = sorted(df['connection_type'].unique())
@@ -232,17 +226,21 @@ def main():
     parser.add_argument("--data_cache_dir", required=True, help="Directory where processed graph data is stored.")
     args = parser.parse_args()
 
-    # --- Setup Output Directory ---
     output_dir = os.path.join(args.model_dir, "gate_analysis")
     os.makedirs(output_dir, exist_ok=True)
     print(f"📊 Analysis results will be saved to: {output_dir}")
 
-    # --- Load Config and Data ---
     config_path = os.path.join(args.model_dir, "base_model_config.yaml")
+    with open(config_path, 'r') as f:
+        config_data = yaml.safe_load(f)
     parameters = Config(config_path)
     
-    if parameters['model_type'] != 'GGNNModel':
-        print("Error: This analysis script is designed for GGNNModel only.")
+    # Handle tuple feature from older configs
+    if isinstance(parameters['features'], str):
+        parameters._params['features'] = tuple(parameters['features'].split(','))
+
+    if parameters['model_type'] != 'GGNNModel' or not parameters['use_edge_gate']:
+        print("Error: This analysis script is designed for a GGNNModel trained with 'use_edge_gate: true'.")
         return
 
     print("Loading dataset...")
@@ -259,47 +257,45 @@ def main():
     node_list = all_graphs.node_list
     print("Dataset loaded.")
 
-    # --- Load Model ---
     print("Loading trained model...")
-    model_path = os.path.join(args.model_dir, "final_training_logs", "ensemble_models", "fold_1_model.pt")
+    # More robustly find the first fold model
+    ensemble_dir = os.path.join(args.model_dir, "final_training_logs", "ensemble_models")
+    fold_models = [f for f in os.listdir(ensemble_dir) if f.startswith('fold_') and f.endswith('_model.pt')]
+    if not fold_models:
+        print(f"Error: No fold models found in {ensemble_dir}")
+        return
+    model_path = os.path.join(ensemble_dir, sorted(fold_models)[0])
+    print(f"Using model: {model_path}")
     
-    # Instantiate our special analyzable model and load the trained weights into it
     model = AnalyzableGGNNModel(parameters)
     model.load_state_dict(torch.load(model_path, map_location=DEVICE))
     model.to(DEVICE)
     print("Model loaded.")
 
-    # --- Run Analysis ---
     print("\nRunning gate analysis...")
     gate_data_per_layer = model.analyze_gates(data)
     print("Analysis complete. Generating reports...")
 
-    # --- Process and Save Results ---
     node_labels = [G.nodes[node_id]["text_label"] for node_id in node_list]
 
     for i, df in enumerate(gate_data_per_layer):
         layer_num = i + 1
         print(f"\n--- Processing Layer {layer_num} ---")
         
-        # Add labels to the dataframe
         df['source_label'] = df['source_idx'].map(lambda idx: node_labels[idx])
         df['target_label'] = df['target_idx'].map(lambda idx: node_labels[idx])
         
-        # Create a connection type string (e.g., "plasmid-chromosome")
         df['connection_type'] = df.apply(
             lambda row: "-".join(sorted([row['source_label'], row['target_label']])), axis=1
         )
         
-        # Save to CSV
         csv_path = os.path.join(output_dir, f'gate_analysis_layer_{layer_num}.csv')
         df.to_csv(csv_path, index=False)
         print(f"✅ Saved detailed data to {csv_path}")
 
-        # Print summary stats
         print("Gate Value Summary:")
         print(df['gate_value'].describe())
 
-        # Generate plots
         create_plots(df, layer_num, output_dir)
         print(f"✅ Saved plots for Layer {layer_num}")
         
