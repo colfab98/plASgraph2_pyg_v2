@@ -12,4 +12,4 @@ runs/
 # Dataset
 plasgraph2-datasets/
 
-slurm-*
+slurm_logs/

@@ -127,7 +127,6 @@ def main():
         ensemble_final_scores = torch.stack(all_final_scores).mean(dim=0)
 
         # calculate metrics and generate plots
-        os.makedirs(args.log_dir, exist_ok=True)
         plasmid_f1s, chromosome_f1s = calculate_and_print_metrics(
             ensemble_final_scores, ensemble_raw_probs, data_test, masks_test, G_test, node_list_test
         )

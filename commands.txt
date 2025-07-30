@@ -29,30 +29,25 @@ If Mac:
 
 
 
-export RUN_NAME="eskapee_v1"
+export RUN_NAME="name"
 
 
 Optuna:
 
 python -u -m scripts.tune_hpo \
     --run_name ${RUN_NAME} \
-    --data_cache_dir cache/eskapee-train/ \
     plasgraph_config.yaml \
     plasgraph2-datasets/eskapee-train.csv \
     plasgraph2-datasets/ \
-    > runs/${RUN_NAME}/hpo.log 2> runs/${RUN_NAME}/hpo.err
+    > runs/${RUN_NAME}/hpo_study/hpo.log 2> runs/${RUN_NAME}/hpo_study/hpo.err
 
-
-rm output/ESKAPEE_hpo_study/hpo_study.db
-
-accelerate launch --num_processes=1 --mixed_precision=fp16 -m scripts.tune_hpo \
+mkdir -p runs/${RUN_NAME}
+PYTHONUNBUFFERED=1 accelerate launch --num_processes=1 --mixed_precision=fp16 -m scripts.tune_hpo \
     --run_name ${RUN_NAME} \
-    --data_cache_dir cache/eskapee-train/ \
     plasgraph_config.yaml \
     plasgraph2-datasets/eskapee-train.csv \
     plasgraph2-datasets/ \
-    > runs/${RUN_NAME}/hpo.log 2> runs/${RUN_NAME}/hpo.err
-
+    > runs/${RUN_NAME}/hpo_study/hpo.log 2> runs/${RUN_NAME}/hpo_study/hpo.err
 
 optuna-dashboard sqlite:///runs/${RUN_NAME}/hpo_study/hpo_study.db
 
@@ -73,23 +68,22 @@ Final Training:
 
 python -u -m scripts.train \
     --run_name ${RUN_NAME} \
-    --data_cache_dir cache/eskapee-train/ \
     plasgraph_config.yaml \
     plasgraph2-datasets/eskapee-train.csv \
     plasgraph2-datasets/ \
     --training_mode k-fold \
-    > runs/${RUN_NAME}/train.log 2> runs/${RUN_NAME}/train.err
+    > runs/${RUN_NAME}/final_model/train.log 2> runs/${RUN_NAME}/final_model/train.err
 
 
-accelerate launch --num_processes=1 --mixed_precision=fp16 -m scripts.train \
+mkdir -p runs/${RUN_NAME}
+mkdir -p runs/${RUN_NAME}/final_model
+PYTHONUNBUFFERED=1 accelerate launch --num_processes=1 --mixed_precision=fp16 -m scripts.train \
     --run_name ${RUN_NAME} \
-    --data_cache_dir cache/eskapee-train/ \
     plasgraph_config.yaml \
     plasgraph2-datasets/eskapee-train.csv \
     plasgraph2-datasets/ \
     --training_mode k-fold \
-    > runs/${RUN_NAME}/train.log 2> runs/${RUN_NAME}/train.err
-
+    > runs/${RUN_NAME}/final_model/train.log 2> runs/${RUN_NAME}/final_model/train.err
 
 
 Analyse Edge Gates:
@@ -100,7 +94,6 @@ python -u -m scripts.analyze_gates \
     plasgraph2-datasets/ \
     --data_cache_dir cache/eskapee-train/ \
     > runs/${RUN_NAME}/analyze_gates.log 2> runs/${RUN_NAME}/analyze_gates.err
-
 
 
 Classify:

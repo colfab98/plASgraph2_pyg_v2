@@ -4,6 +4,8 @@
 #SBATCH --ntasks-per-node=1
 #SBATCH --gpus=1
 #SBATCH --time=02:00:00
+#SBATCH --output=slurm_logs/%x-%j.out
+#SBATCH --error=slurm_logs/%x-%j.err
 
 export TOKENIZERS_PARALLELISM=false
 
