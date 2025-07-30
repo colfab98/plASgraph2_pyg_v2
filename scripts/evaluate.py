@@ -33,21 +33,25 @@ def main():
     """
 
     parser = argparse.ArgumentParser(description="Evaluate a trained plASgraph2 model ensemble.")
-    parser.add_argument("model_dir", help="Directory containing the trained models and config")
+    parser.add_argument("--run_name", required=True, help="Unique name of the experiment run to evaluate.")
     parser.add_argument("test_file_list", help="CSV file listing test samples")
     parser.add_argument("file_prefix", help="Common prefix for all filenames")
-    parser.add_argument("log_dir", help="Output folder for evaluation logs and plots")
     args = parser.parse_args()
+
+    run_dir = os.path.join("runs", args.run_name)
+    model_dir = os.path.join(run_dir, "final_model")
+    log_dir = os.path.join(run_dir, "evaluation_results")
+    os.makedirs(log_dir, exist_ok=True)
 
     accelerator = Accelerator()
 
-    config_path = os.path.join(args.model_dir, "base_model_config.yaml")
+    config_path = os.path.join(model_dir, "base_model_config.yaml")
     if not os.path.exists(config_path):
         print(f"Error: Config file not found at {config_path}")
         return
     parameters = Config(config_path)
 
-    test_data_root = os.path.join(args.log_dir, "test_data_processed")
+    test_data_root = os.path.join("processed_data", args.run_name, "test")
     all_test_graphs = Dataset_Pytorch(
         root=test_data_root,
         file_prefix=args.file_prefix,
@@ -64,7 +68,7 @@ def main():
         accelerator.print(f"Main process using device: {device}")
 
         # Locate all saved model files for the ensemble
-        ensemble_dir = os.path.join(args.model_dir, "final_training_logs", "ensemble_models")
+        ensemble_dir = os.path.join(model_dir, "final_training_logs", "ensemble_models")
         model_paths = sorted(glob.glob(os.path.join(ensemble_dir, "fold_*_model.pt")))
         threshold_paths = sorted(glob.glob(os.path.join(ensemble_dir, "fold_*_thresholds.yaml")))
 
@@ -127,8 +131,8 @@ def main():
         plasmid_f1s, chromosome_f1s = calculate_and_print_metrics(
             ensemble_final_scores, ensemble_raw_probs, data_test, masks_test, G_test, node_list_test
         )
-        plot_f1_violin(plasmid_f1s, chromosome_f1s, args.log_dir)
-        accelerator.print(f"✅ Evaluation complete. Results saved to: {args.log_dir}")
+        plot_f1_violin(plasmid_f1s, chromosome_f1s, log_dir)
+        accelerator.print(f"✅ Evaluation complete. Results saved to: {log_dir}")
 
 
 if __name__ == "__main__":

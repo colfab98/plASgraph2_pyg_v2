@@ -5,11 +5,14 @@
 #SBATCH --gpus-per-task=1    
 #SBATCH --time=06:00:00
 
-PYTHONUNBUFFERED=1 python -m scripts.train \
-    --data_cache_dir cache/eskapee-train/ \
+export RUN_NAME="eskapee_v1" 
+
+mkdir -p runs/${RUN_NAME}
+
+PYTHONUNBUFFERED=1 accelerate launch --num_processes=1 --mixed_precision=fp16 -m scripts.train \
+    --run_name ${RUN_NAME} \
     plasgraph_config.yaml \
-    output/ESKAPEE_hpo_study/best_arch_params.yaml \
     plasgraph2-datasets/eskapee-train.csv \
     plasgraph2-datasets/ \
-    output/ESKAPEE_final_model/ \
-    > output/train.log 2> output/train.err
+    --training_mode k-fold \
+    > runs/${RUN_NAME}/train.log 2> runs/${RUN_NAME}/train.err

@@ -220,17 +220,20 @@ def create_plots(df, layer_num, output_dir):
 
 def main():
     parser = argparse.ArgumentParser(description="Analyze edge gate values of a trained plASgraph2 GGNN model.")
-    parser.add_argument("model_dir", help="Directory containing the final trained model and config file.")
+    parser.add_argument("--run_name", required=True, help="Unique name of the experiment run to analyze.")
     parser.add_argument("train_file_list", help="CSV file listing training samples (for data loading).")
     parser.add_argument("file_prefix", help="Common prefix for all data filenames.")
-    parser.add_argument("--data_cache_dir", required=True, help="Directory where processed graph data is stored.")
     args = parser.parse_args()
 
-    output_dir = os.path.join(args.model_dir, "gate_analysis")
+    data_cache_dir = os.path.join("processed_data", args.run_name, "train")
+
+    model_dir = os.path.join("runs", args.run_name, "final_model")
+
+    output_dir = os.path.join(model_dir, "gate_analysis")
     os.makedirs(output_dir, exist_ok=True)
     print(f"📊 Analysis results will be saved to: {output_dir}")
 
-    config_path = os.path.join(args.model_dir, "base_model_config.yaml")
+    config_path = os.path.join(model_dir, "base_model_config.yaml")
     with open(config_path, 'r') as f:
         config_data = yaml.safe_load(f)
     parameters = Config(config_path)
@@ -246,7 +249,7 @@ def main():
     print("Loading dataset...")
     dummy_accelerator = DummyAccelerator()
     all_graphs = Dataset_Pytorch(
-        root=args.data_cache_dir,
+        root=data_cache_dir,
         file_prefix=args.file_prefix,
         train_file_list=args.train_file_list,
         parameters=parameters,
@@ -259,7 +262,7 @@ def main():
 
     print("Loading trained model...")
     # More robustly find the first fold model
-    ensemble_dir = os.path.join(args.model_dir, "final_training_logs", "ensemble_models")
+    ensemble_dir = os.path.join(model_dir, "final_training_logs", "ensemble_models")
     fold_models = [f for f in os.listdir(ensemble_dir) if f.startswith('fold_') and f.endswith('_model.pt')]
     if not fold_models:
         print(f"Error: No fold models found in {ensemble_dir}")

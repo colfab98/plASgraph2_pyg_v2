@@ -136,12 +136,17 @@ def main():
     parser.add_argument("config_file", help="YAML configuration file.")
     parser.add_argument("train_file_list", help="CSV file listing training samples.")
     parser.add_argument("file_prefix", help="Common prefix for all filenames.")
-    parser.add_argument("--data_cache_dir", required=True, help="Directory where the processed graph data is cached.")
-    parser.add_argument("--output_dir", required=True, help="Directory to save the analysis plots.")
+    parser.add_argument("--run_name", required=True, help="Unique name for the experiment run.")
     parser.add_argument("--feature", type=str, default=None, help="Optional: Specify a single feature to analyze.")
     args = parser.parse_args()
 
-    cache_file_path = os.path.join(args.data_cache_dir, "processed", "all_graphs.pt")
+    data_cache_dir = os.path.join("processed_data", args.run_name, "train")
+
+    output_dir = os.path.join("runs", args.run_name, "feature_analysis")
+    os.makedirs(output_dir, exist_ok=True)
+
+
+    cache_file_path = os.path.join(data_cache_dir, "processed", "all_graphs.pt")
     if not os.path.exists(cache_file_path):
         print(f"❌ Error: Cache file not found at {cache_file_path}")
         return
@@ -150,7 +155,7 @@ def main():
     dummy_accelerator = DummyAccelerator()
     parameters = Config(args.config_file)
     all_graphs_dataset = Dataset_Pytorch(
-        root=args.data_cache_dir,
+        root=data_cache_dir,
         file_prefix=args.file_prefix,
         train_file_list=args.train_file_list,
         parameters=parameters,
@@ -167,10 +172,10 @@ def main():
         features_to_audit = list(parameters["features"]) + ["degree", "length", "gc"]
         print(f"\n🔬 Auditing all model and graph features...")
     
-    analyze_and_plot_feature_distributions(G, features_to_audit, args.output_dir)
+    analyze_and_plot_feature_distributions(G, features_to_audit, output_dir)
 
     # --- NEW: Call the edge analysis function ---
-    analyze_edge_attributes(G, args.output_dir)
+    analyze_edge_attributes(G, output_dir)
 
 
 if __name__ == "__main__":

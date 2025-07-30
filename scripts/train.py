@@ -41,17 +41,22 @@ def main():
 
     parser = argparse.ArgumentParser(description="Train a final plASgraph2 model.")
     parser.add_argument("config_file", help="Base YAML configuration file")
-    parser.add_argument("best_params_file", help="YAML file with best HPO parameters")
+    parser.add_argument("--run_name", required=True, help="Unique name for the experiment run to train.")
     parser.add_argument("train_file_list", help="CSV file listing training samples")
     parser.add_argument("file_prefix", help="Common prefix for all filenames")
-    parser.add_argument("model_output_dir", help="Output folder for final model and logs")
-    parser.add_argument("--data_cache_dir", required=True, help="Directory to store/load the processed graph data.")
     parser.add_argument("--training_mode", choices=['k-fold', 'single-fold'], default='k-fold', help="Choose between k-fold ensemble or single-fold training.")
     args = parser.parse_args()
 
+    data_cache_dir = os.path.join("processed_data", args.run_name, "train")
+
+    run_dir = os.path.join("runs", args.run_name)
+    best_params_file = os.path.join(run_dir, "hpo_study", "best_arch_params.yaml")
+    model_output_dir = os.path.join(run_dir, "final_model")
+
+
     # load base config and update it with the best hyperparameters from HPO
     parameters = Config(args.config_file)
-    with open(args.best_params_file, 'r') as f:
+    with open(best_params_file, 'r') as f:
         best_params = yaml.safe_load(f)
     parameters._params.update(best_params)
 
@@ -60,7 +65,7 @@ def main():
 
 
     # directory for logs related to the final model training
-    log_dir = os.path.join(args.model_output_dir, "final_training_logs")
+    log_dir = os.path.join(model_output_dir, "final_training_logs")
     if os.path.exists(log_dir):
         shutil.rmtree(log_dir)
     os.makedirs(log_dir, exist_ok=True)
@@ -70,7 +75,7 @@ def main():
     # load and process the training data
     accelerator.print("✅ Loading data...")
     all_graphs = Dataset_Pytorch(
-        root=args.data_cache_dir,
+        root=data_cache_dir,
         file_prefix=args.file_prefix,
         train_file_list=args.train_file_list,
         parameters=parameters,
@@ -148,7 +153,7 @@ def main():
     )
 
     # save the final base configuration file for future predictions
-    base_params_path = os.path.join(args.model_output_dir, "base_model_config.yaml")
+    base_params_path = os.path.join(model_output_dir, "base_model_config.yaml")
     parameters.write_yaml(base_params_path)
 
     ensemble_dir = os.path.join(log_dir, "ensemble_models")

@@ -346,53 +346,53 @@ class Dataset_Pytorch(InMemoryDataset):
 
 
 
-        # create the final edge attributes list for the PyG Data object
-        edge_attr_list = []
-        # Correctly loop over the `similarities` tensor
-        for sim in similarities: 
-            # append for both directions of the undirected edge
-            # Use .item() to get the Python number from the tensor
-            edge_attr_list.append([sim.item()]) 
-            edge_attr_list.append([sim.item()])
+            # create the final edge attributes list for the PyG Data object
+            edge_attr_list = []
+            # Correctly loop over the `similarities` tensor
+            for sim in similarities: 
+                # append for both directions of the undirected edge
+                # Use .item() to get the Python number from the tensor
+                edge_attr_list.append([sim.item()]) 
+                edge_attr_list.append([sim.item()])
 
-        # construct node features (x) and batch tensor
-        features = self.parameters["features"]
-        x = np.array([[self.G.nodes[node_id][f] for f in features] for node_id in self.node_list])
+            # construct node features (x) and batch tensor
+            features = self.parameters["features"]
+            x = np.array([[self.G.nodes[node_id][f] for f in features] for node_id in self.node_list])
 
-        # construct the batch tensor, which maps each node to its original sample graph
-        sample_ids = [node.split(':')[0] for node in self.node_list]
-        unique_samples = sorted(list(set(sample_ids)))
-        sample_to_idx_map = {sample_id: i for i, sample_id in enumerate(unique_samples)}
-        batch_indices = [sample_to_idx_map[node.split(':')[0]] for node in self.node_list]
-        batch_tensor = torch.tensor(batch_indices, dtype=torch.long)
+            # construct the batch tensor, which maps each node to its original sample graph
+            sample_ids = [node.split(':')[0] for node in self.node_list]
+            unique_samples = sorted(list(set(sample_ids)))
+            sample_to_idx_map = {sample_id: i for i, sample_id in enumerate(unique_samples)}
+            batch_indices = [sample_to_idx_map[node.split(':')[0]] for node in self.node_list]
+            batch_tensor = torch.tensor(batch_indices, dtype=torch.long)
 
-        # construct the label matrix (y)
-        label_features = ["plasmid_label", "chrom_label"]
-        y = np.array([[self.G.nodes[node_id][f] for f in label_features] for node_id in self.node_list])
+            # construct the label matrix (y)
+            label_features = ["plasmid_label", "chrom_label"]
+            y = np.array([[self.G.nodes[node_id][f] for f in label_features] for node_id in self.node_list])
 
-        # construct the edge index tensor in COO format [2, num_edges]
-        edge_list_sources, edge_list_targets = [], []
-        for u, v in edge_list:
-            u_idx, v_idx = node_to_idx[u], node_to_idx[v]
-            # add entries for both directions of the edge
-            edge_list_sources.extend([u_idx, v_idx])
-            edge_list_targets.extend([v_idx, u_idx])
-        edge_index = torch.tensor(np.vstack((edge_list_sources, edge_list_targets)), dtype=torch.long)
-        
-        # create the final PyG Data object
-        data = Data(
-            x=torch.tensor(x, dtype=torch.float),                       # node features
-            edge_index=edge_index,                                      # graph connectivity
-            y=torch.tensor(y, dtype=torch.float),                       # node lables
-            edge_attr=torch.tensor(edge_attr_list, dtype=torch.float),  # edge features
-            batch=batch_tensor                                          # maps nodes to samples
-        )
+            # construct the edge index tensor in COO format [2, num_edges]
+            edge_list_sources, edge_list_targets = [], []
+            for u, v in edge_list:
+                u_idx, v_idx = node_to_idx[u], node_to_idx[v]
+                # add entries for both directions of the edge
+                edge_list_sources.extend([u_idx, v_idx])
+                edge_list_targets.extend([v_idx, u_idx])
+            edge_index = torch.tensor(np.vstack((edge_list_sources, edge_list_targets)), dtype=torch.long)
+            
+            # create the final PyG Data object
+            data = Data(
+                x=torch.tensor(x, dtype=torch.float),                       # node features
+                edge_index=edge_index,                                      # graph connectivity
+                y=torch.tensor(y, dtype=torch.float),                       # node lables
+                edge_attr=torch.tensor(edge_attr_list, dtype=torch.float),  # edge features
+                batch=batch_tensor                                          # maps nodes to samples
+            )
 
-        
-        # use the parent class's collate method to prepare the data for batching
-        processed_data, slices = self.collate([data])
-        torch.save((processed_data, slices, self.G, self.node_list), self.processed_paths[0])
-        self.accelerator.print("✅ Graph data processed and saved.")
+            
+            # use the parent class's collate method to prepare the data for batching
+            processed_data, slices = self.collate([data])
+            torch.save((processed_data, slices, self.G, self.node_list), self.processed_paths[0])
+            self.accelerator.print("✅ Graph data processed and saved.")
 
         if is_distributed:
             self.accelerator.wait_for_everyone()

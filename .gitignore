@@ -3,11 +3,13 @@
 
 # Caches and generated files
 __pycache__/
-cache/
-output/
+processed_data/
+runs/
 
 # macOS specific
 .DS_Store
 
 # Dataset
 plasgraph2-datasets/
+
+slurm-*

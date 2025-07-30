@@ -26,9 +26,11 @@ def main():
     parser.add_argument("config_file", help="YAML configuration file")
     parser.add_argument("train_file_list", help="CSV file listing training samples")
     parser.add_argument("file_prefix", help="Common prefix for all filenames")
-    parser.add_argument("model_output_dir", help="Output folder for Optuna study and results")
-    parser.add_argument("--data_cache_dir", required=True, help="Directory to store/load the processed graph data.")
+    parser.add_argument("--run_name", required=True, help="Unique name for this experiment run. All outputs will be saved here.")
     args = parser.parse_args()
+
+    data_cache_dir = os.path.join("processed_data", args.run_name, "train")
+
 
     # automatically detects hardware setup (single GPU, multiple GPUs, TPUs, etc.) and prepares 
     # PyTorch training components (model, optimizer, data loaders) to run seamlessly in that environment
@@ -42,7 +44,7 @@ def main():
     # instantiates the custom Dataset_Pytorch class from data.py
     # uses a caching mechanism: if a pre-processed graph exists in 'root' it loads it
     all_graphs = Dataset_Pytorch(
-        root=args.data_cache_dir,               # directory for caching the processed dataset
+        root=data_cache_dir,
         file_prefix=args.file_prefix,           # path prefix for raw data files
         train_file_list=args.train_file_list,   # CSV listing the graphs to load
         parameters=parameters,                  # main configuration object
@@ -59,8 +61,9 @@ def main():
     # update the configuration with the actual number of node features from the processed data
     parameters['n_input_features'] = data.num_node_features
 
-    # output directory
-    os.makedirs(args.model_output_dir, exist_ok=True)
+    hpo_output_dir = os.path.join("runs", args.run_name, "hpo_study")
+    os.makedirs(hpo_output_dir, exist_ok=True)
+
 
     # --- setup for cross-validation ---
     all_sample_ids = np.array(sorted(list(set(G.nodes[node_id]["sample"] for node_id in node_list))))
@@ -109,7 +112,7 @@ def main():
     pruner = optuna.pruners.MedianPruner(n_startup_trials=parameters['n_startup_trials'])
     study_name = "plasgraph-hpo-study"
     # storage location for the study database (using SQLite)
-    storage_name = f"sqlite:///{os.path.join(args.model_output_dir, 'hpo_study.db')}"
+    storage_name = f"sqlite:///{os.path.join(hpo_output_dir, 'hpo_study.db')}"
     # configure the sampler, which suggests hyperparameter values
     sampler = optuna.samplers.TPESampler(multivariate=True)
 
@@ -167,7 +170,7 @@ def main():
         if 'features' in best_arch_params and isinstance(best_arch_params['features'], tuple):
             best_arch_params['features'] = ",".join(best_arch_params['features'])
 
-        best_params_path = os.path.join(args.model_output_dir, "best_arch_params.yaml")
+        best_params_path = os.path.join(hpo_output_dir, "best_arch_params.yaml")
         # write the best hyperparameters to the YAML file
         with open(best_params_path, 'w') as f:
             yaml.dump(best_arch_params, f, sort_keys=False)
@@ -175,7 +178,7 @@ def main():
 
         # --- generate and save visualizations ---
         print("Generating Optuna visualizations (matplotlib backend)...")
-        optuna_viz_dir = os.path.join(args.model_output_dir, "optuna_visualizations")
+        optuna_viz_dir = os.path.join(hpo_output_dir, "optuna_visualizations")
         os.makedirs(optuna_viz_dir, exist_ok=True)
 
         try:

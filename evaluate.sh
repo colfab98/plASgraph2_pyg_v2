@@ -7,9 +7,12 @@
 
 export TOKENIZERS_PARALLELISM=false
 
+export RUN_NAME="eskapee_v1"
+
+mkdir -p runs/${RUN_NAME}/evaluation_results
+
 PYTHONUNBUFFERED=1 accelerate launch --num_processes=1 --mixed_precision=fp16 -m scripts.evaluate \
-    output/ESKAPEE_final_model/ \
+    --run_name ${RUN_NAME} \
     plasgraph2-datasets/eskapee-test.csv \
     plasgraph2-datasets/ \
-    output/evaluation_results/ \
-    > output/evaluation_results/eval.log 2> output/evaluation_results/eval.err
+    > runs/${RUN_NAME}/evaluation_results/eval.log 2> runs/${RUN_NAME}/evaluation_results/eval.err

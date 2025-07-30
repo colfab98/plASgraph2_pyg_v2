@@ -26,76 +26,81 @@ If Mac:
 
 
 
+
+
+
+export RUN_NAME="eskapee_v1"
+
+
 Optuna:
 
-mkdir -p output
-
 python -u -m scripts.tune_hpo \
+    --run_name ${RUN_NAME} \
     --data_cache_dir cache/eskapee-train/ \
     plasgraph_config.yaml \
     plasgraph2-datasets/eskapee-train.csv \
     plasgraph2-datasets/ \
-    output/ESKAPEE_hpo_study \
-    > output/hpo.log 2> output/hpo.err
+    > runs/${RUN_NAME}/hpo.log 2> runs/${RUN_NAME}/hpo.err
 
 
 rm output/ESKAPEE_hpo_study/hpo_study.db
 
-PYTHONUNBUFFERED=1 accelerate launch --num_processes=1 -m --mixed_precision=fp16 scripts.tune_hpo \
+accelerate launch --num_processes=1 --mixed_precision=fp16 -m scripts.tune_hpo \
+    --run_name ${RUN_NAME} \
     --data_cache_dir cache/eskapee-train/ \
     plasgraph_config.yaml \
     plasgraph2-datasets/eskapee-train.csv \
     plasgraph2-datasets/ \
-    output/ESKAPEE_hpo_study \
-    > output/hpo.log 2> output/hpo.err
+    > runs/${RUN_NAME}/hpo.log 2> runs/${RUN_NAME}/hpo.err
 
 
-optuna-dashboard sqlite:///output/ESKAPEE_hpo_study/hpo_study.db
+optuna-dashboard sqlite:///runs/${RUN_NAME}/hpo_study/hpo_study.db
 
 
 
 Audit Data:
 
 python -u -m scripts.audit_cached_data \
-    --data_cache_dir cache/eskapee-train/ \
-    --output_dir feature_analysis_plots/ \
+    --run_name ${RUN_NAME} \
     plasgraph_config.yaml \
     plasgraph2-datasets/eskapee-train.csv \
     plasgraph2-datasets/ \
-    > output/audit_cached_data.log 2> output/audit_cached_data.err
+    > runs/${RUN_NAME}/audit.log 2> runs/${RUN_NAME}/audit.err
 
 
 
 Final Training:
 
 python -u -m scripts.train \
+    --run_name ${RUN_NAME} \
     --data_cache_dir cache/eskapee-train/ \
     plasgraph_config.yaml \
-    output/ESKAPEE_hpo_study/best_arch_params.yaml \
     plasgraph2-datasets/eskapee-train.csv \
     plasgraph2-datasets/ \
-    output/ESKAPEE_final_model/ \
-    --training_mode single-fold \
-    > output/train.log 2> output/train.err
+    --training_mode k-fold \
+    > runs/${RUN_NAME}/train.log 2> runs/${RUN_NAME}/train.err
 
-PYTHONUNBUFFERED=1 accelerate launch --num_processes=1 --mixed_precision=fp16 -m scripts.train \
+
+accelerate launch --num_processes=1 --mixed_precision=fp16 -m scripts.train \
+    --run_name ${RUN_NAME} \
     --data_cache_dir cache/eskapee-train/ \
     plasgraph_config.yaml \
-    output/ESKAPEE_hpo_study/best_arch_params.yaml \
     plasgraph2-datasets/eskapee-train.csv \
     plasgraph2-datasets/ \
-    output/ESKAPEE_final_model/ \
-    > output/train.log 2> output/train.err
+    --training_mode k-fold \
+    > runs/${RUN_NAME}/train.log 2> runs/${RUN_NAME}/train.err
+
 
 
 Analyse Edge Gates:
 
 python -u -m scripts.analyze_gates \
-    output/ESKAPEE_final_model/ \
+    --run_name ${RUN_NAME} \
     plasgraph2-datasets/eskapee-train.csv \
     plasgraph2-datasets/ \
     --data_cache_dir cache/eskapee-train/ \
-    > output/analyze_gates.log 2> output/analyze_gates.err
+    > runs/${RUN_NAME}/analyze_gates.log 2> runs/${RUN_NAME}/analyze_gates.err
+
 
 
 Classify:
@@ -108,17 +113,17 @@ python -m scripts.classify gfa \
 
 Evaluate:
 
-mkdir -p output/evaluation_results/
-
 python -u -m scripts.evaluate \
-    output/ESKAPEE_final_model/ \
+    --run_name ${RUN_NAME} \
     plasgraph2-datasets/eskapee-test.csv \
     plasgraph2-datasets/ \
-    output/evaluation_results/ \
-    > output/evaluation_results/eval.log 2> output/evaluation_results/eval.err
+    > runs/${RUN_NAME}/evaluation_results/eval.log 2> runs/${RUN_NAME}/evaluation_results/eval.err
 
-
-
+accelerate launch --num_processes=1 --mixed_precision=fp16 -m scripts.evaluate \
+    --run_name ${RUN_NAME} \
+    plasgraph2-datasets/eskapee-test.csv \
+    plasgraph2-datasets/ \
+    > runs/${RUN_NAME}/evaluation_results/eval.log 2> runs/${RUN_NAME}/evaluation_results/eval.err
 
 
 
