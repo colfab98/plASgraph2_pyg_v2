@@ -1,9 +1,9 @@
 #!/bin/bash
 #SBATCH --job-name=tune_hpo
 #SBATCH --nodes=1
-#SBATCH --ntasks-per-node=1
-#SBATCH --gpus=1
-#SBATCH --time=1:00:00
+#SBATCH --ntasks-per-node=2
+#SBATCH --gpus=2
+#SBATCH --time=12:00:00
 #SBATCH --output=slurm_logs/%x-%j.out
 #SBATCH --error=slurm_logs/%x-%j.err
 
@@ -16,7 +16,7 @@ export RUN_NAME="eskapee_v1"
 
 mkdir -p runs/${RUN_NAME}
 
-PYTHONUNBUFFERED=1 accelerate launch --num_processes=1 --mixed_precision=fp16 -m scripts.tune_hpo \
+PYTHONUNBUFFERED=1 accelerate launch --num_processes=2 --mixed_precision=fp16 -m scripts.tune_hpo \
     --run_name ${RUN_NAME} \
     plasgraph_config.yaml \
     plasgraph2-datasets/eskapee-train.csv \

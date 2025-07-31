@@ -45,6 +45,13 @@ def main():
 
     accelerator = Accelerator()
 
+    if accelerator.is_main_process:
+        print("----------------------------------------")
+        print(f"RUN_NAME: {args.run_name}")
+        print(f"Evaluation Dataset: {os.path.basename(args.test_file_list)}")
+        print("----------------------------------------")
+
+
     config_path = os.path.join(model_dir, "base_model_config.yaml")
     if not os.path.exists(config_path):
         print(f"Error: Config file not found at {config_path}")

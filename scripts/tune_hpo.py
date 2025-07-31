@@ -36,6 +36,13 @@ def main():
     # PyTorch training components (model, optimizer, data loaders) to run seamlessly in that environment
     accelerator = Accelerator()
 
+    if accelerator.is_main_process:
+        print("----------------------------------------")
+        print(f"RUN_NAME: {args.run_name}")
+        print(f"Dataset: {os.path.basename(args.train_file_list)}")
+        print("----------------------------------------")
+
+
     # creates the main configuration object for the script by reading a user-provided YAML file (plasgraph_config.yaml)
     parameters = Config(args.config_file)
     # attach the path of the loaded configuration file to the parameters object itself

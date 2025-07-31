@@ -72,6 +72,13 @@ def main():
 
     accelerator = Accelerator()
 
+    if accelerator.is_main_process:
+        print("----------------------------------------")
+        print(f"RUN_NAME: {args.run_name}")
+        print(f"Dataset: {os.path.basename(args.train_file_list)}")
+        print("----------------------------------------")
+
+
     # load and process the training data
     accelerator.print("✅ Loading data...")
     all_graphs = Dataset_Pytorch(
