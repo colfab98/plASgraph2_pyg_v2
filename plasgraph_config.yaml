@@ -42,7 +42,7 @@ batch_size: 8192
 
 # HPO and Evaluation Parameters
 k_folds: 5
-optuna_n_trials: 2
+optuna_n_trials: 20
 epochs_trials: 1000
 n_startup_trials: 10 
 set_thresholds: true

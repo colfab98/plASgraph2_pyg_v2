@@ -88,12 +88,12 @@ PYTHONUNBUFFERED=1 accelerate launch --num_processes=1 --mixed_precision=fp16 -m
 
 Analyse Edge Gates:
 
+mkdir -p runs/${RUN_NAME}/gate_analysis
 python -u -m scripts.analyze_gates \
     --run_name ${RUN_NAME} \
     plasgraph2-datasets/eskapee-train.csv \
     plasgraph2-datasets/ \
-    --data_cache_dir cache/eskapee-train/ \
-    > runs/${RUN_NAME}/analyze_gates.log 2> runs/${RUN_NAME}/analyze_gates.err
+    > runs/${RUN_NAME}/gate_analysis/analyze_gates.log 2> runs/${RUN_NAME}/gate_analysis/analyze_gates.err
 
 
 Classify:

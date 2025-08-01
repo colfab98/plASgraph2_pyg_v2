@@ -116,17 +116,17 @@ class GGNNConv(MessagePassing):
         gate_layers = []
         # input layer
         gate_layers.append(nn.Linear(edge_gate_input_dim, edge_gate_hidden_dim))
-        gate_layers.append(nn.ReLU())
+        gate_layers.append(nn.ELU())
         # hidden layers 
         for _ in range(edge_gate_depth - 1):
             gate_layers.append(nn.Linear(edge_gate_hidden_dim, edge_gate_hidden_dim))
-            gate_layers.append(nn.ReLU())
+            gate_layers.append(nn.ELU())
         # output layer which produces a single logit for the gate
         gate_layers.append(nn.Linear(edge_gate_hidden_dim, 1))
         self.edge_gate_network = nn.Sequential(*gate_layers)
 
-        # with torch.no_grad():
-        #     self.edge_gate_network[-1].bias.fill_(-1.0)
+        with torch.no_grad():
+            self.edge_gate_network[-1].bias.fill_(-1.0)
 
 
         if self.use_gru_update:
