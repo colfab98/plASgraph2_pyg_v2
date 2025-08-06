@@ -139,6 +139,9 @@ class GGNNConv(MessagePassing):
         else:
             self.lin_gcn_style = nn.Linear(in_channels, out_channels)
 
+        self.analysis_mode = False
+        self._gate_storage = None
+
 
     def forward(self, x, edge_index, edge_attr=None): 
         """
@@ -191,6 +194,10 @@ class GGNNConv(MessagePassing):
             edge_gate_logit = self.edge_gate_network(edge_gate_input)
             # apply a sigmoid to get a gate value between 0 and 1
             edge_gate_value = torch.sigmoid(edge_gate_logit)
+
+            if self.analysis_mode and self._gate_storage is not None:
+                self._gate_storage.append(edge_gate_value.detach().cpu())
+
 
             # calculate the standard GCN message, scaled by the normalization factor
             original_message = norm.view(-1, 1) * x_j
@@ -372,6 +379,39 @@ class GGNNModel(torch.nn.Module):
         x = self.final_fc2(x) 
 
         return x
+
+    def set_analysis_mode(self, enabled: bool):
+        """
+        Recursively set the analysis mode for all GGNNConv layers.
+        """
+        for module in self.modules():
+            if isinstance(module, GGNNConv):
+                module.analysis_mode = enabled
+                if enabled:
+                    module._gate_storage = []
+                else:
+                    module._gate_storage = None
+
+    def get_gate_data(self):
+        """
+        Collect gate data from all GGNNConv layers after a forward pass.
+        Returns a list of lists, where each inner list contains gate tensors for a layer.
+        """
+        gate_data_per_layer = []
+        # We need to handle both tied and untied layers
+        if self['tie_gnn_layers']:
+            if hasattr(self.ggnn_layer, '_gate_storage') and self.ggnn_layer._gate_storage:
+                # For tied layers, all gate values are in one list. We need to split them.
+                num_passes = self['n_gnn_layers']
+                gates_per_pass = len(self.ggnn_layer._gate_storage) // num_passes
+                for i in range(num_passes):
+                    layer_gates = self.ggnn_layer._gate_storage[i*gates_per_pass:(i+1)*gates_per_pass]
+                    gate_data_per_layer.append(torch.cat(layer_gates))
+        else:
+            for layer in self.ggnn_layers:
+                if hasattr(layer, '_gate_storage') and layer._gate_storage:
+                    gate_data_per_layer.append(torch.cat(layer._gate_storage))
+        return gate_data_per_layer
 
     def __getitem__(self, key):
         return self._params[key]

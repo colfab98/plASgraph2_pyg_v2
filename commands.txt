@@ -96,13 +96,6 @@ python -u -m scripts.analyze_gates \
     > runs/${RUN_NAME}/gate_analysis/analyze_gates.log 2> runs/${RUN_NAME}/gate_analysis/analyze_gates.err
 
 
-Classify:
-
-python -m scripts.classify gfa \
-    output/ESKAPEE_final_model/ \
-    ~/plasgraph2-datasets/eskapee-test/robertson-benchmark_paer-SAMN10163177-s.gfa.gz \
-    SAMN10163177_output_new.csv
-
 
 Evaluate:
 
@@ -117,9 +110,6 @@ accelerate launch --num_processes=1 --mixed_precision=fp16 -m scripts.evaluate \
     plasgraph2-datasets/eskapee-test.csv \
     plasgraph2-datasets/ \
     > runs/${RUN_NAME}/evaluation_results/eval.log 2> runs/${RUN_NAME}/evaluation_results/eval.err
-
-
-
 
 
 
@@ -139,3 +129,26 @@ python -m scripts.explain node \
     'Contig_42_280.615' \
     output/explanation_node/ \
     --file_prefix plasgraph2-datasets/
+
+
+
+Classify:
+
+mkdir -p runs/eskapee_v1/classify/ && \
+python -m scripts.classify \
+    --run_name eskapee_v1 \
+    gfa "plasgraph2-datasets/bacillus-test/bacillus_bant-SAMN03024436-u.gfa.gz" \
+    "bacillus_bant-SAMN03024436-u_results.csv" \
+    > runs/eskapee_v1/classify/bacillus_bant-SAMN03024436-u.log \
+    2> runs/eskapee_v1/classify/bacillus_bant-SAMN03024436-u.err
+
+
+Visualize predictions:
+
+python -m scripts.visualize_predictions \
+    --run_name "eskapee_v1" \
+    --prediction_file "runs/eskapee_v1/classify/bacillus_bant-SAMN03024436-u_results.csv" \
+    --gfa_file "plasgraph2-datasets/bacillus-test/bacillus_bant-SAMN03024436-u.gfa.gz" \
+    --label_file "plasgraph2-datasets/bacillus-test/bacillus_bant-SAMN03024436-u.gfa.csv" \
+    > runs/eskapee_v1/visualizations/bacillus_bant-SAMN03024436-u_visual.log \
+    2> runs/eskapee_v1/visualizations/bacillus_bant-SAMN03024436-u_visual.err
