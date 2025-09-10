@@ -7,7 +7,7 @@
 #SBATCH --output=slurm_logs/%x-%j.out
 #SBATCH --error=slurm_logs/%x-%j.err
 
-export RUN_NAME="eskapee_v3" 
+export RUN_NAME="paper_like" 
 
 mkdir -p runs/${RUN_NAME}
 mkdir -p runs/${RUN_NAME}/final_model

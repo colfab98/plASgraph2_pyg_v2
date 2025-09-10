@@ -12,6 +12,7 @@ PARAMS = [
     {'name': 'feature_generation_method', 'type': str, 'default': 'evo'}, # method for generating sequence features; can be 'evo' for a Transformer model or 'kmer'
     {'name': 'evo_model_name', 'type': str, 'default': 'nvidia/Evo-2-8B-base'}, # specific name of the pre-trained Evo model to use if 'feature_generation_method' is 'evo'
     {'name': 'num_workers', 'type': int, 'default': 12}, # number of CPU worker processes to use for loading data in parallel
+    {'name': 'assemblies', 'type': str, 'default': 'unicycler'}, 
 
     # Model Architecture Parameters
 

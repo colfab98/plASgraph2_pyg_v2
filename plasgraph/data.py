@@ -273,7 +273,7 @@ class Dataset_Pytorch(InMemoryDataset):
             print("Main process: Reading raw graph files to generate sequence list...")
 
             # read all specified graph files (GFAs) and combine them into a single NetworkX graph object
-            self.G = read_graph_set(self.file_prefix, self.train_file_list, self.parameters['minimum_contig_length'], self.accelerator)
+            self.G = read_graph_set(self.file_prefix, self.train_file_list, self.parameters, self.accelerator)
             self.node_list = list(self.G)
             
             # data all other processes need
@@ -582,7 +582,7 @@ def read_single_graph(file_prefix, gfa_file, sample_id, minimum_contig_length):
     read_graph(graph_file, None, sample_id, graph, minimum_contig_length)
     return graph
 
-def read_graph_set(file_prefix, file_list, minimum_contig_length, accelerator, read_labels=True):
+def read_graph_set(file_prefix, file_list, parameters, accelerator, read_labels=True):
     """
     Reads and aggregates several individual graph files into a single NetworkX graph.
 
@@ -594,12 +594,15 @@ def read_graph_set(file_prefix, file_list, minimum_contig_length, accelerator, r
     # Read all file entries from the manifest
     all_files = pd.read_csv(file_list, names=('graph','csv','sample_id'))
 
-    # Filter the DataFrame to keep only rows where the 'graph' filename contains '-u'
-    train_files = all_files[all_files['graph'].str.contains('-u', na=False)].copy()
-
-    if accelerator.is_main_process:
-        print(f"Found {len(all_files)} total graphs, filtered to {len(train_files)} graphs with '-u' in filename.")
-
+    if parameters["assemblies"] == 'unicycler':
+        train_files = all_files[all_files['graph'].str.contains('-u', na=False)].copy()
+        if accelerator.is_main_process:
+            print(f"Found {len(all_files)} total graphs, filtering to {len(train_files)} Unicycler graphs ('-u' in filename).")
+    else: # 'all'
+        train_files = all_files.copy()
+        if accelerator.is_main_process:
+            print(f"Found {len(all_files)} total graphs, using all of them as specified.")
+            
     total_graphs = len(train_files)
 
     graph = nx.Graph()
@@ -613,6 +616,7 @@ def read_graph_set(file_prefix, file_list, minimum_contig_length, accelerator, r
             csv_file = file_prefix + row['csv']
         else:
             csv_file = None
-        read_graph(graph_file, csv_file, row['sample_id'], graph, minimum_contig_length)
+        # Correctly access the value from the parameters object
+        read_graph(graph_file, csv_file, row['sample_id'], graph, parameters['minimum_contig_length'])
 
     return graph
