@@ -265,6 +265,7 @@ class Dataset_Pytorch(InMemoryDataset):
 
     def process(self):
 
+        all_embeddings_tensor = None
         is_distributed = self.accelerator.num_processes > 1
 
         # check ensures that the file I/O and initial data aggregation are
@@ -279,70 +280,78 @@ class Dataset_Pytorch(InMemoryDataset):
             # data all other processes need
             all_sequences = [self.G.nodes[node_id].get("sequence", "") for node_id in self.node_list]
 
-        if is_distributed:
-            # Broadcast the initial data from the main process to all others
-            if self.accelerator.is_main_process:
-                objects_to_broadcast = [all_sequences]
+        if self.parameters['feature_generation_method'] == 'evo':
+            if is_distributed:
+                # Broadcast the initial data from the main process to all others
+                if self.accelerator.is_main_process:
+                    objects_to_broadcast = [all_sequences]
+                else:
+                    objects_to_broadcast = [None]
+                dist.broadcast_object_list(objects_to_broadcast, src=0)
+                all_sequences = objects_to_broadcast[0]
+
+            with self.accelerator.split_between_processes(all_sequences) as sequences_split:
+                sequences_on_this_process = list(sequences_split)
+                
+                # Check if there are sequences to process to avoid unnecessary initialization
+                if sequences_on_this_process:
+                    evo_gen = EvoFeatureGenerator(self.parameters['evo_model_name'], self.accelerator)
+                    embeddings_on_this_process = evo_gen.get_embeddings_batch(sequences_on_this_process)
+                else:
+                    embeddings_on_this_process = torch.tensor([])
+
+
+            if is_distributed:
+                # If distributed, gather the results from all processes.
+                gathered_embeddings = [None] * self.accelerator.num_processes
+                # This is the line that was failing. It's now safely inside the conditional block.
+                dist.all_gather_object(gathered_embeddings, embeddings_on_this_process)
+                
+                if self.accelerator.is_main_process:
+                    # On the main process, concatenate the gathered tensors into one.
+                    all_embeddings_tensor = torch.cat([t.to(self.accelerator.device) for t in gathered_embeddings if t.numel() > 0], dim=0)
             else:
-                objects_to_broadcast = [None]
-            dist.broadcast_object_list(objects_to_broadcast, src=0)
-            all_sequences = objects_to_broadcast[0]
-
-        with self.accelerator.split_between_processes(all_sequences) as sequences_split:
-            sequences_on_this_process = list(sequences_split)
-            
-            # Check if there are sequences to process to avoid unnecessary initialization
-            if sequences_on_this_process:
-                evo_gen = EvoFeatureGenerator(self.parameters['evo_model_name'], self.accelerator)
-                embeddings_on_this_process = evo_gen.get_embeddings_batch(sequences_on_this_process)
-            else:
-                embeddings_on_this_process = torch.tensor([])
-
-
-        if is_distributed:
-            # If distributed, gather the results from all processes.
-            gathered_embeddings = [None] * self.accelerator.num_processes
-            # This is the line that was failing. It's now safely inside the conditional block.
-            dist.all_gather_object(gathered_embeddings, embeddings_on_this_process)
-            
-            if self.accelerator.is_main_process:
-                # On the main process, concatenate the gathered tensors into one.
-                all_embeddings_tensor = torch.cat([t.to(self.accelerator.device) for t in gathered_embeddings if t.numel() > 0], dim=0)
+                # If not distributed, the results are simply what this one process computed.
+                all_embeddings_tensor = embeddings_on_this_process
+        
+        elif self.parameters['feature_generation_method'] == 'kmer':
+            pass # K-mer logic is handled on the main process
         else:
-            # If not distributed, the results are simply what this one process computed.
-            all_embeddings_tensor = embeddings_on_this_process
+            raise ValueError(f"Unknown feature_generation_method: {self.parameters['feature_generation_method']}")
 
 
         if self.accelerator.is_main_process:
             node_to_idx = {node_id: i for i, node_id in enumerate(self.node_list)}
             edge_list = list(self.G.edges())
 
-            # Calculate similarities on the main process
-            u_indices = [node_to_idx[u] for u, v in edge_list]
-            v_indices = [node_to_idx[v] for u, v in edge_list]
+            if self.parameters['feature_generation_method'] == 'evo':
+
+                # Calculate similarities on the main process
+                u_indices = [node_to_idx[u] for u, v in edge_list]
+                v_indices = [node_to_idx[v] for u, v in edge_list]
+                
+                # Move indices to the correct device for gathering embeddings
+                u_indices_tensor = torch.tensor(u_indices, device=all_embeddings_tensor.device)
+                v_indices_tensor = torch.tensor(v_indices, device=all_embeddings_tensor.device)
+
+                emb_u = all_embeddings_tensor[u_indices_tensor]
+                emb_v = all_embeddings_tensor[v_indices_tensor]
+
+                # Calculate cosine similarity for all edges at once
+                similarities = F.cosine_similarity(emb_u, emb_v)
             
-            # Move indices to the correct device for gathering embeddings
-            u_indices_tensor = torch.tensor(u_indices, device=all_embeddings_tensor.device)
-            v_indices_tensor = torch.tensor(v_indices, device=all_embeddings_tensor.device)
+            elif self.parameters['feature_generation_method'] == 'kmer':
+                self.accelerator.print("Calculating k-mer dot product for edges...")
+                sim_list = []
+                for u, v in tqdm(edge_list, desc="  > Calculating k-mer dot products"):
+                    kmer_u = np.array(self.G.nodes[u]['kmer_counts_norm'])
+                    kmer_v = np.array(self.G.nodes[v]['kmer_counts_norm'])
+                    dot_product = np.dot(kmer_u, kmer_v)
+                    sim_list.append(dot_product)
+                similarities = torch.tensor(sim_list, dtype=torch.float)
 
-            emb_u = all_embeddings_tensor[u_indices_tensor]
-            emb_v = all_embeddings_tensor[v_indices_tensor]
-
-            # Calculate cosine similarity for all edges at once
-            similarities = F.cosine_similarity(emb_u, emb_v)
-
-            # ------------ THIS IS THE FIX ------------
-            # REMOVE the dist.all_gather_object call and the list flattening.
-            # We already have the final `similarities` tensor.
-            # -----------------------------------------
 
             self.accelerator.print("Constructing final PyG Data object...")
-
-            # Assign the calculated similarities back to the NetworkX graph object
-            self.accelerator.print("Attaching edge attributes to NetworkX graph object...")
-            for i, (u, v) in enumerate(edge_list):
-                # Use the `similarities` tensor directly
-                self.G.edges[u, v]['embedding_cosine_similarity'] = similarities[i].item()
 
 
 
