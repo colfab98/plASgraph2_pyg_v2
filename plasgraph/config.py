@@ -52,8 +52,10 @@ PARAMS = [
     
     # HPO and Evaluation Parameters
 
+    {'name': 'training_mode', 'type': str, 'default': 'k-fold'}, # training mode: 'k-fold' for ensemble or 'single-fold' for a single model
     {'name': 'k_folds', 'type': int, 'default': 5}, # number of folds to use for cross-validation during HPO and final training
     {'name': 'optuna_n_trials', 'type': int, 'default': 50}, # total number of HPO trials to run with Optuna
+    {'name': 'training_style', 'type': str, 'default': 'neighbor_sampling'}, # Training style: 'neighbor_sampling' for mini-batches or 'full_graph' for a single pass
     {'name': 'epochs_trials', 'type': int, 'default': 100}, # maximum number of epochs to train for during a single HPO trial
     {'name': 'n_startup_trials', 'type': int, 'default': 20}, # number of initial HPO trials to run before the pruner can start stopping unpromising trials
     {'name': 'set_thresholds', 'type': bool, 'default': False}, # if True, enables the automatic determination of optimal classification thresholds

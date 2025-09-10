@@ -44,7 +44,6 @@ def main():
     parser.add_argument("--run_name", required=True, help="Unique name for the experiment run to train.")
     parser.add_argument("train_file_list", help="CSV file listing training samples")
     parser.add_argument("file_prefix", help="Common prefix for all filenames")
-    parser.add_argument("--training_mode", choices=['k-fold', 'single-fold'], default='k-fold', help="Choose between k-fold ensemble or single-fold training.")
     args = parser.parse_args()
 
     data_cache_dir = os.path.join("processed_data", args.run_name, "train")
@@ -135,7 +134,7 @@ def main():
 
 
     # --- This if/else block was modified ---
-    if args.training_mode == 'k-fold':
+    if parameters['training_mode'] == 'k-fold':
         print(f"✅ Setting up stratified {parameters['k_folds']}-fold cross-validation based on samples.")
         skf = StratifiedKFold(n_splits=parameters["k_folds"], shuffle=True, random_state=parameters["random_seed"])
         # Create splits based on the indices of the sample IDs array, stratified by y

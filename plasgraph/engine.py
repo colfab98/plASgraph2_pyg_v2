@@ -121,7 +121,7 @@ def objective(trial, accelerator, parameters, data, sample_splits, all_sample_id
         # learning rate scheduler to reduce the learning rate on validation loss plateau
         scheduler = ReduceLROnPlateau(optimizer, 'min', factor=trial_config_obj['scheduler_factor'], patience=trial_config_obj['scheduler_patience'])
         # loss function
-        criterion = torch.nn.BCEWithLogitsLoss()
+        criterion = torch.nn.BCEWithLogitsLoss(reduction='sum')
 
         # NeighborLoader for the training set of this fold
         train_loader = NeighborLoader(
@@ -316,7 +316,7 @@ def train_final_model(accelerator, parameters, data, sample_splits, all_sample_i
 
         optimizer = optim.Adam(model.parameters(), lr=parameters['learning_rate'], weight_decay=parameters['l2_reg'])
         scheduler = ReduceLROnPlateau(optimizer, 'min', factor=parameters['scheduler_factor'], patience=parameters['scheduler_patience'], verbose=True)
-        criterion = torch.nn.BCEWithLogitsLoss()
+        criterion = torch.nn.BCEWithLogitsLoss(reduction='sum')
 
         num_workers = parameters['num_workers']
 

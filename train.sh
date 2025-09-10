@@ -7,7 +7,7 @@
 #SBATCH --output=slurm_logs/%x-%j.out
 #SBATCH --error=slurm_logs/%x-%j.err
 
-export RUN_NAME="paper_like" 
+export RUN_NAME="paper_like3" 
 
 mkdir -p runs/${RUN_NAME}
 mkdir -p runs/${RUN_NAME}/final_model
@@ -18,5 +18,4 @@ PYTHONUNBUFFERED=1 accelerate launch --num_processes=1 --mixed_precision=fp16 -m
     plasgraph_config.yaml \
     plasgraph2-datasets/eskapee-train.csv \
     plasgraph2-datasets/ \
-    --training_mode k-fold \
     > runs/${RUN_NAME}/final_model/train.log 2> runs/${RUN_NAME}/final_model/train.err
