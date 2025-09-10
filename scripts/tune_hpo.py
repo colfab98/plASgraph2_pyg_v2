@@ -10,6 +10,7 @@ import pandas as pd
 from plasgraph.data import Dataset_Pytorch
 from plasgraph.config import config as Config
 from plasgraph.engine import objective
+from plasgraph.utils import set_all_seeds
 
 import optuna.visualization as vis
 import matplotlib.pyplot as plt
@@ -29,6 +30,9 @@ def main():
     parser.add_argument("--run_name", required=True, help="Unique name for this experiment run. All outputs will be saved here.")
     args = parser.parse_args()
 
+    parameters = Config(args.config_file)
+    set_all_seeds(parameters['random_seed'])
+
     data_cache_dir = os.path.join("processed_data", args.run_name, "train")
 
 
@@ -43,8 +47,8 @@ def main():
         print("----------------------------------------")
 
 
-    # creates the main configuration object for the script by reading a user-provided YAML file (plasgraph_config.yaml)
-    parameters = Config(args.config_file)
+    # # creates the main configuration object for the script by reading a user-provided YAML file (plasgraph_config.yaml)
+    # parameters = Config(args.config_file)
     # attach the path of the loaded configuration file to the parameters object itself
     parameters.config_file_path = args.config_file
 
@@ -121,7 +125,7 @@ def main():
     # storage location for the study database (using SQLite)
     storage_name = f"sqlite:///{os.path.join(hpo_output_dir, 'hpo_study.db')}"
     # configure the sampler, which suggests hyperparameter values
-    sampler = optuna.samplers.TPESampler(multivariate=True)
+    sampler = optuna.samplers.TPESampler(multivariate=True, seed=parameters['random_seed'])
 
     # check if this is the main process (in a multi-GPU setup, process_index 0)
     if accelerator.is_main_process:

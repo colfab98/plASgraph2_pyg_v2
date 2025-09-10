@@ -5,7 +5,25 @@ import matplotlib.pyplot as plt
 import os
 import numpy as np
 import torch.nn.functional as F 
+import random
 
+
+
+def set_all_seeds(seed):
+    """
+    Sets the random seeds for all relevant libraries to ensure reproducibility.
+    """
+    os.environ['PYTHONHASHSEED'] = str(seed)
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed(seed)
+        torch.cuda.manual_seed_all(seed)  # if you are using multi-GPU.
+    # The following two lines are crucial for deterministic results on CUDA.
+    # Note that they can negatively impact performance.
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
 
 def fix_gradients(config_params, model: torch.nn.Module): 
     """

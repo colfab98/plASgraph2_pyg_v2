@@ -14,6 +14,7 @@ import pandas as pd
 from plasgraph.data import Dataset_Pytorch
 from plasgraph.config import config as Config
 from plasgraph.engine import train_final_model
+from plasgraph.utils import set_all_seeds
 
 from contextlib import contextmanager
 from accelerate import Accelerator
@@ -46,6 +47,9 @@ def main():
     parser.add_argument("file_prefix", help="Common prefix for all filenames")
     args = parser.parse_args()
 
+    parameters = Config(args.config_file)
+    set_all_seeds(parameters['random_seed'])
+
     data_cache_dir = os.path.join("processed_data", args.run_name, "train")
 
     run_dir = os.path.join("runs", args.run_name)
@@ -54,7 +58,7 @@ def main():
 
 
     # load base config and update it with the best hyperparameters from HPO
-    parameters = Config(args.config_file)
+    # parameters = Config(args.config_file)
     with open(best_params_file, 'r') as f:
         best_params = yaml.safe_load(f)
     parameters._params.update(best_params)
