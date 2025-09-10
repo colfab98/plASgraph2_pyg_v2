@@ -55,12 +55,14 @@ optuna-dashboard sqlite:///runs/${RUN_NAME}/hpo_study/hpo_study.db
 
 Audit Data:
 
+mkdir -p runs/${RUN_NAME}/feature_analysis/ && \
 python -u -m scripts.audit_cached_data \
     --run_name ${RUN_NAME} \
     plasgraph_config.yaml \
     plasgraph2-datasets/eskapee-train.csv \
     plasgraph2-datasets/ \
-    > runs/${RUN_NAME}/audit.log 2> runs/${RUN_NAME}/audit.err
+    > runs/${RUN_NAME}/feature_analysis/audit.log \
+    2> runs/${RUN_NAME}/feature_analysis/audit.err
 
 
 
@@ -99,12 +101,14 @@ python -u -m scripts.analyze_gates \
 
 Evaluate:
 
+mkdir -p runs/${RUN_NAME}/evaluation_results
 python -u -m scripts.evaluate \
     --run_name ${RUN_NAME} \
     plasgraph2-datasets/eskapee-test.csv \
     plasgraph2-datasets/ \
     > runs/${RUN_NAME}/evaluation_results/eval.log 2> runs/${RUN_NAME}/evaluation_results/eval.err
 
+mkdir -p runs/${RUN_NAME}/evaluation_results
 accelerate launch --num_processes=1 --mixed_precision=fp16 -m scripts.evaluate \
     --run_name ${RUN_NAME} \
     plasgraph2-datasets/eskapee-test.csv \
@@ -134,13 +138,17 @@ python -m scripts.explain node \
 
 Classify:
 
-mkdir -p runs/eskapee_v1/classify/ && \
+export RUN_NAME="eskapee_v2"   
+GFA_PATH="/home/fcolanto/plASgraph2_pyg_v2/plasgraph2-datasets/eskapee-test/robertson-benchmark_abau-SAMN10163228-u.gfa.gz"   
+OUT_BASENAME="SAMN10163228_plasgraph.csv" 
+
+mkdir -p "runs/${RUN_NAME}/classify"
 python -m scripts.classify \
-    --run_name eskapee_v1 \
-    gfa "plasgraph2-datasets/bacillus-test/bacillus_bant-SAMN03024436-u.gfa.gz" \
-    "bacillus_bant-SAMN03024436-u_results.csv" \
-    > runs/eskapee_v1/classify/bacillus_bant-SAMN03024436-u.log \
-    2> runs/eskapee_v1/classify/bacillus_bant-SAMN03024436-u.err
+    --run_name "${RUN_NAME}" \
+    gfa "${GFA_PATH}" \
+    "${OUT_BASENAME}" \
+    > "runs/${RUN_NAME}/classify/${OUT_BASENAME%.csv}.log" \
+    2> "runs/${RUN_NAME}/classify/${OUT_BASENAME%.csv}.err"
 
 
 Visualize predictions:

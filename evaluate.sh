@@ -9,7 +9,7 @@
 
 export TOKENIZERS_PARALLELISM=false
 
-export RUN_NAME="eskapee_v1"
+export RUN_NAME="eskapee_v3"
 
 mkdir -p runs/${RUN_NAME}/evaluation_results
 

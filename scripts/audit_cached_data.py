@@ -15,7 +15,6 @@ from plasgraph.config import config as Config
 class DummyAccelerator:
     """A mock class that satisfies the Dataset_Pytorch constructor."""
     def __init__(self):
-        # In a real scenario, this would be a real device
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     def print(self, message):
@@ -34,51 +33,40 @@ def analyze_and_plot_feature_distributions(graph: nx.Graph, features_to_analyze:
     node_data = {node: data for node, data in graph.nodes(data=True)}
     df = pd.DataFrame.from_dict(node_data, orient='index')
 
-    # --- NEW: Explicitly identify and report ghost nodes ---
-    ghost_nodes_mask = df['length'].isna()
-    if ghost_nodes_mask.any():
-        print(f"\n👻 Found {ghost_nodes_mask.sum()} ghost nodes (with missing 'length' attribute).")
-        print("IDs of ghost nodes:", df[ghost_nodes_mask].index.tolist())
-    else:
-        print("\n✅ No ghost nodes with missing attributes found.")
-
     for feature in features_to_analyze:
         if feature not in df.columns:
             print(f"\n⚠️ Feature '{feature}' not found in the graph attributes. Skipping.")
             continue
         
-        # Fill missing values with 0 to include ghost nodes in the audit
-        feature_series = df[feature].fillna(0)
+        feature_series = df[feature].dropna()
 
         if feature_series.empty:
             print(f"\n⚠️ Feature '{feature}' has no data. Skipping.")
             continue
             
-        print(f"\n--- Analysis for feature: '{feature}' (including ghost nodes as 0) ---")
+        print(f"\n--- Analysis for feature: '{feature}' ---")
 
         print("Summary Statistics:")
         print(feature_series.describe())
 
         plt.figure(figsize=(10, 6))
         sns.histplot(feature_series, kde=True, bins=50)
-        plt.title(f"Distribution of Node Feature: '{feature}' (Ghost Nodes Included)", fontsize=16)
+        plt.title(f"Distribution of Node Feature: '{feature}'", fontsize=16)
+        
+        # --- CHANGE: Removed all automatic log scaling logic for axes. ---
         plt.xlabel(f"Value of {feature}", fontsize=12)
         plt.ylabel("Frequency (Number of Nodes)", fontsize=12)
-
-        if feature_series.max() > 1000 and feature_series.skew() > 2:
-             plt.yscale('log')
-             plt.ylabel("Frequency (Log Scale)", fontsize=12)
 
         plt.grid(axis='y', linestyle='--', alpha=0.7)
         plt.tight_layout()
         
-        plot_path = os.path.join(output_dir, f"distribution_{feature}_with_ghosts.png")
+        plot_path = os.path.join(output_dir, f"distribution_{feature}.png")
         plt.savefig(plot_path)
         plt.close()
 
         print(f"✅ Histogram saved to: {plot_path}")
 
-# --- NEW: Function to analyze edge attributes ---
+
 def analyze_edge_attributes(graph: nx.Graph, output_dir: str):
     """
     Analyzes and plots the distribution of the primary edge attribute.
@@ -87,7 +75,6 @@ def analyze_edge_attributes(graph: nx.Graph, output_dir: str):
     print("🔬 Analyzing Edge Attributes")
     print("="*50)
 
-    # Check for the 'evo' embedding attribute first, then the 'kmer' one
     edge_attrs = list(nx.get_edge_attributes(graph, "embedding_cosine_similarity").values())
     attr_name = "embedding_cosine_similarity"
 
@@ -106,7 +93,6 @@ def analyze_edge_attributes(graph: nx.Graph, output_dir: str):
     print("Summary Statistics:")
     print(edge_series.describe())
 
-    # Specifically count the number of edges with an attribute of exactly 0
     zero_count = (edge_series == 0).sum()
     total_edges = len(edge_series)
     if total_edges > 0:
@@ -141,10 +127,8 @@ def main():
     args = parser.parse_args()
 
     data_cache_dir = os.path.join("processed_data", args.run_name, "train")
-
     output_dir = os.path.join("runs", args.run_name, "feature_analysis")
     os.makedirs(output_dir, exist_ok=True)
-
 
     cache_file_path = os.path.join(data_cache_dir, "processed", "all_graphs.pt")
     if not os.path.exists(cache_file_path):
@@ -173,8 +157,6 @@ def main():
         print(f"\n🔬 Auditing all model and graph features...")
     
     analyze_and_plot_feature_distributions(G, features_to_audit, output_dir)
-
-    # --- NEW: Call the edge analysis function ---
     analyze_edge_attributes(G, output_dir)
 
 

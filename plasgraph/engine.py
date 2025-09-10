@@ -39,20 +39,20 @@ def objective(trial, accelerator, parameters, data, sample_splits, all_sample_id
 
     # use the 'trial' object to suggest hyperparameter values for Optuna to optimize
     trial_params_dict = parameters._params.copy()
-    trial_params_dict['l2_reg'] = trial.suggest_float("l2_reg", 1e-5, 1e-2, log=True)
-    trial_params_dict['n_channels'] = trial.suggest_int("n_channels", 16, 64, step=16)
-    trial_params_dict['n_gnn_layers'] = trial.suggest_int("n_gnn_layers", 4, 10)
+    trial_params_dict['l2_reg'] = trial.suggest_float("l2_reg", 1e-5, 1e-3, log=True)
+    trial_params_dict['n_channels'] = trial.suggest_int("n_channels", 8, 64, step=16)
+    trial_params_dict['n_gnn_layers'] = trial.suggest_int("n_gnn_layers", 2, 6)
     trial_params_dict['dropout_rate'] = trial.suggest_float("dropout_rate", 0.0, 0.3)
-    trial_params_dict['gradient_clipping'] = trial.suggest_float("gradient_clipping", 1.0, 20.0, log=True)
+    trial_params_dict['gradient_clipping'] = trial.suggest_float("gradient_clipping", 1.0, 10.0, log=True)
     trial_params_dict['edge_gate_hidden_dim'] = trial.suggest_int("edge_gate_hidden_dim", 8, 32, step=8)
-    trial_params_dict['n_channels_preproc'] = trial.suggest_int("n_channels_preproc", 5, 15, step=5)
-    trial_params_dict['edge_gate_depth'] = trial.suggest_int("edge_gate_depth", 2, 4)
-    trial_params_dict['batch_size'] = trial.suggest_categorical('batch_size', [256, 512, 1024, 2048, 4096])
-    first_hop_val = trial.suggest_int("neighbors_first_hop", 40, 80, step=4)
+    trial_params_dict['n_channels_preproc'] = trial.suggest_int("n_channels_preproc", 10, 25, step=5)
+    trial_params_dict['edge_gate_depth'] = trial.suggest_int("edge_gate_depth", 2, 6)
+    trial_params_dict['batch_size'] = trial.suggest_categorical('batch_size', [64, 128 , 256, 512, 1024])
+    first_hop_val = trial.suggest_int("neighbors_first_hop", 10, 50, step=10)
     trial_params_dict['first_hop_neighbors'] = first_hop_val
-    trial_params_dict['subsequent_hop_neighbors'] = trial.suggest_int("neighbors_subsequent_hops", 30, first_hop_val, step=2)
+    trial_params_dict['subsequent_hop_neighbors'] = trial.suggest_int("neighbors_subsequent_hops", 10, first_hop_val, step=5)
 
-    trial_params_dict['learning_rate'] = trial.suggest_float("learning_rate", 1e-3, 1e-1, log=True)
+    trial_params_dict['learning_rate'] = trial.suggest_float("learning_rate", 1e-5, 1e-2, log=True)
 
     n_layers = trial_params_dict['n_gnn_layers']
     first_hop_neighbors = trial_params_dict['first_hop_neighbors']
