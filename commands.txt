@@ -154,9 +154,9 @@ python -m scripts.classify \
 Visualize predictions:
 
 python -m scripts.visualize_predictions \
-    --run_name "eskapee_v1" \
+    --run_name "${RUN_NAME}" \
     --prediction_file "runs/eskapee_v1/classify/bacillus_bant-SAMN03024436-u_results.csv" \
     --gfa_file "plasgraph2-datasets/bacillus-test/bacillus_bant-SAMN03024436-u.gfa.gz" \
     --label_file "plasgraph2-datasets/bacillus-test/bacillus_bant-SAMN03024436-u.gfa.csv" \
-    > runs/eskapee_v1/visualizations/bacillus_bant-SAMN03024436-u_visual.log \
-    2> runs/eskapee_v1/visualizations/bacillus_bant-SAMN03024436-u_visual.err
+    > runs/"${RUN_NAME}"/visualizations/bacillus_bant-SAMN03024436-u_visual.log \
+    2> runs/"${RUN_NAME}"/visualizations/bacillus_bant-SAMN03024436-u_visual.err

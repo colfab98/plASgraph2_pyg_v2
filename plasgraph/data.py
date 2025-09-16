@@ -273,12 +273,34 @@ class Dataset_Pytorch(InMemoryDataset):
         if self.accelerator.is_main_process:
             print("Main process: Reading raw graph files to generate sequence list...")
 
-            # read all specified graph files (GFAs) and combine them into a single NetworkX graph object
-            self.G = read_graph_set(self.file_prefix, self.train_file_list, self.parameters, self.accelerator)
+            # MODIFIED: Capture the returned dataframe from read_graph_set
+            self.G, train_files_df = read_graph_set(self.file_prefix, self.train_file_list, self.parameters, self.accelerator)
             self.node_list = list(self.G)
+
+            # NEW BLOCK: Load edge read support counts if using the new dataset
+            if self.parameters['dataset_type'] == 'new':
+                self.accelerator.print("Loading edge read support features...")
+                # Initialize all edges with a default value of 0.0
+                nx.set_edge_attributes(self.G, 0.0, 'read_support')
+                for _, row in tqdm(train_files_df.iterrows(), total=len(train_files_df), desc="  > Reading edge support files"):
+                    edge_csv_path = self.file_prefix + row['edge_csv']
+                    sample_id = row['sample_id']
+                    if os.path.exists(edge_csv_path):
+                        edge_df = pd.read_csv(edge_csv_path)
+                        for _, edge_row in edge_df.iterrows():
+                            # Ensure contig names are treated as strings for ID generation
+                            u_contig = str(edge_row['contig_u'])
+                            v_contig = str(edge_row['contig_v'])
+                            node_u = utils.get_node_id(sample_id, u_contig)
+                            node_v = utils.get_node_id(sample_id, v_contig)
+                            
+                            # Update the edge attribute in the graph
+                            if self.G.has_edge(node_u, node_v):
+                                self.G.edges[node_u, node_v]['read_support'] = float(edge_row['total_support'])
             
             # data all other processes need
             all_sequences = [self.G.nodes[node_id].get("sequence", "") for node_id in self.node_list]
+
 
         if self.parameters['feature_generation_method'] == 'evo':
             if is_distributed:
@@ -353,16 +375,28 @@ class Dataset_Pytorch(InMemoryDataset):
 
             self.accelerator.print("Constructing final PyG Data object...")
 
-
-
+            # MODIFIED: The edge attribute construction loop is now more flexible
             # create the final edge attributes list for the PyG Data object
             edge_attr_list = []
-            # Correctly loop over the `similarities` tensor
-            for sim in similarities: 
-                # append for both directions of the undirected edge
-                # Use .item() to get the Python number from the tensor
-                edge_attr_list.append([sim.item()]) 
-                edge_attr_list.append([sim.item()])
+            # Loop over the original edge_list to maintain order with the 'similarities' tensor
+            for i, (u, v) in enumerate(edge_list):
+                # Feature 1: Similarity (always present)
+                similarity = similarities[i].item()
+
+                if self.parameters['use_edge_read_counts']:
+                    # Feature 2: Read Count (conditional)
+                    read_support = self.G.edges[u, v].get('read_support', 0.0)
+                    # Apply log transform to normalize the scale
+                    log_read_support = math.log(read_support + 1.0)
+                    feature_vector = [similarity, log_read_support]
+                else:
+                    # Default behavior: use similarity only
+                    feature_vector = [similarity]
+                
+                # Append feature vector for both directions of the undirected edge
+                edge_attr_list.append(feature_vector)
+                edge_attr_list.append(feature_vector)
+
 
             # construct node features (x) and batch tensor
             features = self.parameters["features"]
@@ -456,6 +490,7 @@ def read_graph(graph_file, csv_file, sample_id, graph, minimum_contig_length):
     Parses a single GFA file, computes node attributes, and adds its nodes and edges
     to a pre-existing NetworkX graph object.
     """
+
 
     # first pass: read all nodes and compute initial features
     current_nodes = [] # nodes from this specific file
@@ -601,18 +636,29 @@ def read_graph_set(file_prefix, file_list, parameters, accelerator, read_labels=
     """
 
     # Read all file entries from the manifest
-    all_files = pd.read_csv(file_list, names=('graph','csv','sample_id'))
+    cols = ('gfa_gz','gfa_csv','edge_csv','sample_id') if parameters['dataset_type']=='new' else ('graph','csv','sample_id')
+    all_files = pd.read_csv(file_list, names=cols)
 
-    if parameters["assemblies"] == 'unicycler':
-        train_files = all_files[all_files['graph'].str.contains('-u', na=False)].copy()
-        if accelerator.is_main_process:
-            print(f"Found {len(all_files)} total graphs, filtering to {len(train_files)} Unicycler graphs ('-u' in filename).")
-    else: # 'all'
+
+    if parameters['dataset_type'] == 'original':
+        # For the original dataset, apply the old filtering logic
+        if parameters["assemblies"] == 'unicycler':
+            train_files = all_files[all_files['graph'].str.contains('-u', na=False)].copy()
+            if accelerator.is_main_process:
+                print(f"Found {len(all_files)} total graphs, filtering to {len(train_files)} Unicycler graphs ('-u' in filename) for original dataset.")
+        else: # 'all'
+            train_files = all_files.copy()
+            if accelerator.is_main_process:
+                print(f"Found {len(all_files)} total graphs, using all of them as specified for original dataset.")
+    else: # This is for the 'new' dataset type
+        # For the new dataset, we do not filter by filename.
+        # We assume the manifest contains only the desired assemblies.
         train_files = all_files.copy()
         if accelerator.is_main_process:
-            print(f"Found {len(all_files)} total graphs, using all of them as specified.")
+            print(f"Found {len(train_files)} total graphs listed in the manifest for new dataset (no filename filtering).")
             
     total_graphs = len(train_files)
+
 
     graph = nx.Graph()
     for i, (idx, row) in enumerate(train_files.iterrows()):
@@ -620,12 +666,14 @@ def read_graph_set(file_prefix, file_list, parameters, accelerator, read_labels=
         if accelerator.is_main_process:
             print(f"Processing graph {i + 1}/{total_graphs}: {row['sample_id']}")
 
-        graph_file = file_prefix + row['graph']
+        graph_file = file_prefix + (row['gfa_gz'] if parameters['dataset_type']=='new' else row['graph'])
+
         if read_labels:
-            csv_file = file_prefix + row['csv']
+            csv_file = file_prefix + (row['gfa_csv'] if parameters['dataset_type']=='new' else row['csv']) if read_labels else None
+
         else:
             csv_file = None
         # Correctly access the value from the parameters object
         read_graph(graph_file, csv_file, row['sample_id'], graph, parameters['minimum_contig_length'])
 
-    return graph
+    return graph, train_files

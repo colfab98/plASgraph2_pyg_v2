@@ -100,6 +100,7 @@ class GGNNConv(MessagePassing):
         dropout_rate = parameters['dropout_rate']
         self.use_edge_gate = parameters['use_edge_gate']
         self.use_gru_update = parameters['use_gru_update']
+        self.n_edge_features = 2 if parameters['use_edge_read_counts'] else 1
 
         self.in_channels = in_channels
         self.out_channels = out_channels
@@ -108,7 +109,7 @@ class GGNNConv(MessagePassing):
 
         # input dimension is the size of the source and target node features, 
         # plus 1 for the edge attribute (cosine similarity of embeddings or a k-mer dot product)
-        edge_gate_input_dim = in_channels * 2 + 1       
+        edge_gate_input_dim = in_channels * 2 + self.n_edge_features   
 
         edge_gate_hidden_dim = parameters['edge_gate_hidden_dim']
         edge_gate_depth = parameters['edge_gate_depth'] 
@@ -184,7 +185,7 @@ class GGNNConv(MessagePassing):
         if self.use_edge_gate:
             # if no edge attributes are provided, create a zero tensor as a placeholder
             if edge_attr is None: 
-                edge_attr_expanded = torch.zeros((x_i.size(0), 1), device=x_i.device) 
+                edge_attr_expanded = torch.zeros((x_i.size(0), self.n_edge_features), device=x_i.device)
             else:
                 edge_attr_expanded = edge_attr
 

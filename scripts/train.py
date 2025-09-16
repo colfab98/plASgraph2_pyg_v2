@@ -57,14 +57,13 @@ def main():
     model_output_dir = os.path.join(run_dir, "final_model")
 
 
-    # load base config and update it with the best hyperparameters from HPO
-    # parameters = Config(args.config_file)
     with open(best_params_file, 'r') as f:
         best_params = yaml.safe_load(f)
     parameters._params.update(best_params)
 
     if isinstance(parameters['features'], str):
         parameters._params['features'] = tuple(parameters['features'].split(','))
+
 
 
     # directory for logs related to the final model training

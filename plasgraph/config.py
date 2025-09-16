@@ -13,6 +13,7 @@ PARAMS = [
     {'name': 'evo_model_name', 'type': str, 'default': 'nvidia/Evo-2-8B-base'}, # specific name of the pre-trained Evo model to use if 'feature_generation_method' is 'evo'
     {'name': 'num_workers', 'type': int, 'default': 12}, # number of CPU worker processes to use for loading data in parallel
     {'name': 'assemblies', 'type': str, 'default': 'unicycler'}, 
+    {'name': 'dataset_type', 'type': str, 'default': 'new'}, # Determines manifest format. Options: 'original', 'new'
 
     # Model Architecture Parameters
 
@@ -28,6 +29,7 @@ PARAMS = [
     {'name': 'neighbors_first_hop', 'type': int, 'default': 15}, # Number of neighbors to sample in the first GNN layer hop
     {'name': 'neighbors_subsequent_hops', 'type': int, 'default': 10}, # Number of neighbors to sample in all subsequent hops
     {'name': 'use_edge_gate', 'type': bool, 'default': True}, # whether to use an edge gating mechanism to modulate messages based on edge attributes
+    {'name': 'use_edge_read_counts', 'type': bool, 'default': True}, # If True, adds log-transformed read counts as an edge feature
     {'name': 'edge_gate_hidden_dim', 'type': int, 'default': 32}, # for GGNNModel, this sets the hidden dimension of the neural network that computes edge weights
     {'name': 'edge_gate_depth', 'type': int, 'default': 3}, # for GGNNModel, this sets the number of layers in the edge gating network.
     {'name': 'use_GraphNorm', 'type': bool, 'default': True}, # whether to use GraphNorm for normalizing node features within each graph in a batch
