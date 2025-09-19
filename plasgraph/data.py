@@ -19,56 +19,62 @@ from transformers import AutoModel, AutoTokenizer, BertModel
 
 from . import utils
 
+
+# prevent deadlocks with hugging face tokenizers when using multiple dataloader workers
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 
 class EdgeDataset(Dataset):
-    """A simple Dataset to hold graph edges for batch processing."""
+    """simple Dataset wrapper for a list of edges"""
     def __init__(self, edges):
-        self.edges = edges
+        self.edges = edges  # store the list of edges
 
     def __len__(self):
-        return len(self.edges)
+        return len(self.edges)  # return the total number of edges
 
     def __getitem__(self, idx):
-        return self.edges[idx]
+        return self.edges[idx]  # retrieve a single edge by its index
 
 
 class SequenceDataset(Dataset):
     """
-    A simple Dataset to hold sequences and their original indices.
-    
-    This is a helper class used to wrap lists of sequences and their corresponding
-    original positions, making them compatible with PyTorch's DataLoader for
-    batch processing. This ensures that even after shuffling or batching, we
-    can map processed results back to their original locations.
+    dataset wrapper for sequences and their original indices
+    this is crucial for mapping results (e.g., embeddings) back to the correct nodes
     """
     def __init__(self, sequences, original_indices):
-        self.sequences = sequences
-        self.original_indices = original_indices
+        self.sequences = sequences      # store the list of dna sequences
+        self.original_indices = original_indices    # store their corresponding original positions
 
     def __len__(self):
-        return len(self.sequences)
+        return len(self.sequences)  # return the total number of sequences
 
     def __getitem__(self, idx):
+        # return the sequence and its original index as a tuple
         return self.sequences[idx], self.original_indices[idx]
 
 def sequence_collate_fn(batch):
-    """Custom collate function to batch sequences and their indices."""
-    sequences = [item[0] for item in batch]
-    indices = [item[1] for item in batch]
+    """
+    custom collate function to organize a batch of (sequence, index) pairs
+    it transforms a list of tuples into two separate lists
+    """
+    sequences = [item[0] for item in batch]     # unzip all sequences into a single list
+    indices = [item[1] for item in batch]       # unzip all indices into a single list
     return sequences, indices
 
 
 
 class EvoFeatureGenerator:
-    """A helper class to manage the Evo model and feature generation."""
+    """
+    manages the evo dna foundation model for generating sequence embeddings.
+    handles model loading, device placement, and efficient batch processing of sequences
+    of any length, with support for multi-gpu inference via accelerate
+    """
     def __init__(self, model_name, accelerator: Accelerator):
         print(f"Initializing EvoFeatureGenerator with model: {model_name} on device: {accelerator.device}")
         self.accelerator = accelerator
-        # load the tokenizer specific to the chosen Evo model from Hugging Face
+        # load the pre-trained tokenizer; `trust_remote_code` is needed for custom model architectures
         self.tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
-        # load the base Evo model (BertModel) to get the raw hidden states
+        # load the pre-trained model weights; `use_safetensors` is a secure and efficient format
         self.model = BertModel.from_pretrained(model_name, trust_remote_code=True, use_safetensors=True)
         # get the size of the embeddings
         self.embedding_dim = self.model.config.hidden_size
@@ -77,35 +83,39 @@ class EvoFeatureGenerator:
         # set the model to evaluation mode to disable dropout and other training-specific layers
         self.model.eval()
 
-    @torch.no_grad()
+    @torch.no_grad()    # disables gradient calculations to save memory and speed up inference
+
     def get_embedding(self, dna_sequence):
-        """Generates an embedding for a single DNA sequence, handling long sequences by chunking."""
-        # if the input sequence is empty, return a zero vector of the correct embedding dimension
+        """
+        generates an embedding for a SINGLE dna sequence
+        handles long sequences by chunking and averaging the results
+        """
+        # return a zero vector if the sequence is empty
         if not dna_sequence:
             return torch.zeros(self.embedding_dim, device=self.accelerator.device)
-        # tokenize the entire DNA sequence into a list of token IDs
+
+        # convert the dna string into a list of integer token IDs
         token_ids = self.tokenizer.encode(dna_sequence, add_special_tokens=False)      
         # set the maximum number of tokens the model can handle at once, leaving space for [CLS] and [SEP]
         max_length = 510 
+        
+        # if the sequence fits, process it in one go
         if len(token_ids) <= max_length:
-            # use the tokenizer to prepare the full input with special tokens and return PyTorch tensors
             inputs = self.tokenizer(dna_sequence, return_tensors="pt")
-            # move inputs to the correct device
             inputs = {k: v.to(self.accelerator.device) for k, v in inputs.items()}
             # pass the inputs to the model
             outputs = self.model(**inputs)
-            # calculate the final embedding by taking the mean of the last hidden state across all tokens and remove the batch dimension
+            # final embedding is the mean of all token hidden states from the last layer
             return outputs.last_hidden_state.mean(dim=1).squeeze()
 
         # for long sequences, process in chunks and average the results
         chunk_embeddings = []
         # iterate over the token IDs in steps of `max_length`
         for i in range(0, len(token_ids), max_length):
-            # extract the current chunk of token IDs
             chunk = token_ids[i:i + max_length]
             # manually create the input tensor for the chunk, adding the CLS and SEP token IDs
             input_ids = torch.tensor([self.tokenizer.cls_token_id] + chunk + [self.tokenizer.sep_token_id]).unsqueeze(0)
-            # create an attention mask of all ones, as we want to attend to all tokens in the chunk
+            # create an attention mask of all ones
             attention_mask = torch.ones_like(input_ids)
 
             # pass tensors to the model on the correct device
@@ -114,34 +124,34 @@ class EvoFeatureGenerator:
                 attention_mask=attention_mask.to(self.accelerator.device)
             )
             
-            # calculate the mean embedding for this chunk
+            # calculate the embedding for this chunk
             chunk_embedding = outputs.last_hidden_state.mean(dim=1).squeeze()
             chunk_embeddings.append(chunk_embedding)
 
-        # average the embeddings of all chunks by stacking them into a tensor and taking the mean along the new dimension
+        # stack all chunk embeddings into a single tensor and average them
         final_embedding = torch.stack(chunk_embeddings).mean(dim=0)
         return final_embedding
     
     @torch.no_grad()
     def get_embeddings_batch(self, sequences: list[str]):
         """
-        Generates embeddings for a BATCH of DNA sequences.
-        Short sequences are batched together, while long sequences are chunked and processed efficiently.
+        generates embeddings for a BATCH of dna sequences with high efficiency using a hybrid strategy
         """
         max_length = 510
-        # to store the final embeddings, ensuring the order is preserved
+        # to hold final embeddings, ensuring order is preserved
         results = [None] * len(sequences)
-        # lists to hold the indices and content of short and long sequences
+        # lists to categorize sequences for different processing strategies
         short_sequences_indices = []
         short_sequences_list = []
         long_sequences_indices = []
 
-        # first, classify all sequences as short or long based on their tokenized length
+        # iterate through all sequences to classify them as "short" or "long"
         for i, seq in enumerate(sequences):
             # handle empty sequences
             if not seq:
                 results[i] = torch.zeros(self.embedding_dim, dtype=torch.float32, device=self.accelerator.device)
                 continue
+
             # tokenize the sequence to find its length
             token_ids = self.tokenizer.encode(seq, add_special_tokens=False)
             if len(token_ids) <= max_length:
@@ -150,13 +160,11 @@ class EvoFeatureGenerator:
             else:
                 long_sequences_indices.append(i)
 
-        # --- process all short sequences in batches ---
+        # --- process all short sequences in efficient, padded batches ---
         if short_sequences_list:
             # define a mini-batch size for processing the short sequences
             mini_batch_size = 128
-            # PyTorch Dataset to wrap the short sequences and their original indices
             short_seq_dataset = SequenceDataset(short_sequences_list, short_sequences_indices)
-            # DataLoader to handle batching of the short sequences
             data_loader = DataLoader(
                 short_seq_dataset,
                 batch_size=mini_batch_size,
@@ -168,7 +176,7 @@ class EvoFeatureGenerator:
             progress_bar = tqdm(data_loader, 
                                 desc="  > Processing Short Sequences", 
                                 disable=not self.accelerator.is_main_process)
-            # iterate over the mini-batches of short sequences
+
             for batch_sequences, batch_indices in progress_bar:
                 # tokenize the entire batch at once, with padding and truncation
                 inputs = self.tokenizer(
@@ -178,11 +186,8 @@ class EvoFeatureGenerator:
                     truncation=True, 
                     max_length=512
                 )
-                # move the tokenized batch to the correct GPU/CPU
                 inputs = {k: v.to(self.accelerator.device) for k, v in inputs.items()}
-                # run the model on the batch
                 outputs = self.model(**inputs)
-                # calculate the mean embedding for every sequence in the batch
                 short_embeddings = outputs.last_hidden_state.mean(dim=1)
                 
                 # place each resulting embedding into the main `results` list at its correct original position
@@ -192,14 +197,13 @@ class EvoFeatureGenerator:
         # --- process all long sequences by chunking and batching the chunks ---
         if long_sequences_indices:
             all_chunk_strings = []
-            all_chunk_origins = [] # Tracks which original sequence each chunk belongs to
+            all_chunk_origins = []  
 
             # deconstruct all long sequences into a single flat list of string chunks
             for original_idx in long_sequences_indices:
                 sequence = sequences[original_idx]
                 # tokenize the long sequence
                 token_ids = self.tokenizer.encode(sequence, add_special_tokens=False)
-                # iterate through the token IDs in chunks
                 for i in range(0, len(token_ids), max_length):
                     chunk_token_ids = token_ids[i:i + max_length]
                     # decode the token chunk back to a string so the tokenizer can handle batch padding
@@ -210,9 +214,7 @@ class EvoFeatureGenerator:
             # dictionary to gather the embeddings for all chunks belonging to the same original sequence
             results_by_origin = {idx: [] for idx in long_sequences_indices}
 
-            # DataLoader to create large batches of these chunks for efficient processing
             chunk_dataset = SequenceDataset(all_chunk_strings, all_chunk_origins)
-            # use a larger batch size for chunks as they are uniformly sized and smaller
             chunk_loader = DataLoader(chunk_dataset, batch_size=256, collate_fn=sequence_collate_fn)
 
             progress_bar = tqdm(chunk_loader,
@@ -246,65 +248,73 @@ class EvoFeatureGenerator:
     
 
 class Dataset_Pytorch(InMemoryDataset):
+    """
+    main pytorch geometric dataset class that orchestrates the entire data pipeline
+    it uses a caching mechanism: it processes raw data once, saves the result, and
+    loads the cached version on subsequent runs for speed
+    """
     def __init__(self, root, file_prefix, train_file_list, parameters, accelerator: Accelerator):
         self.file_prefix = file_prefix
         self.train_file_list = train_file_list
         self.parameters = parameters
         self.accelerator = accelerator
 
-        # checks for a processed file in the 'root' directory and will call self.process() automatically if it's not found
+        # this call triggers the caching logic: if processed data is not found, `self.process()` is called
         super().__init__(root)
         
+        # load the processed data from the cached file
         loaded_data = torch.load(self.processed_paths[0], weights_only=False)
         self.data, self.slices, self.G, self.node_list = loaded_data
 
-    # tells the InMemoryDataset framework what the final, cached file containing the processed data should be named
     @property
     def processed_file_names(self):
+        """specifies the name of the cached file"""
         return ["all_graphs.pt"]
 
     def process(self):
-
+        """
+        the core data processing pipeline, called only when the cached file doesn't exist
+        it handles file i/o, feature generation (potentially distributed), and final data object creation
+        """
         all_embeddings_tensor = None
-        is_distributed = self.accelerator.num_processes > 1
+        is_distributed = self.accelerator.num_processes > 1     # check if we are in a multi-gpu setup
 
-        # check ensures that the file I/O and initial data aggregation are
-        # performed by only ONE process (the main process) in a distributed setup
+        # the main process (rank 0) is responsible for all file reading and initial data aggregation
         if self.accelerator.is_main_process:
             print("Main process: Reading raw graph files to generate sequence list...")
 
-            # MODIFIED: Capture the returned dataframe from read_graph_set
+            # `read_graph_set` reads all gfa files and aggregates them into one large networkx graph
             self.G, train_files_df = read_graph_set(self.file_prefix, self.train_file_list, self.parameters, self.accelerator)
             self.node_list = list(self.G)
 
-            # NEW BLOCK: Load edge read support counts if using the new dataset
+            # conditionally load edge read support counts if specified
             if self.parameters['dataset_type'] == 'new':
                 self.accelerator.print("Loading edge read support features...")
-                # Initialize all edges with a default value of 0.0
                 nx.set_edge_attributes(self.G, 0.0, 'read_support')
+                # iterate through the manifest to find and read edge support files
                 for _, row in tqdm(train_files_df.iterrows(), total=len(train_files_df), desc="  > Reading edge support files"):
                     edge_csv_path = self.file_prefix + row['edge_csv']
                     sample_id = row['sample_id']
                     if os.path.exists(edge_csv_path):
                         edge_df = pd.read_csv(edge_csv_path)
                         for _, edge_row in edge_df.iterrows():
-                            # Ensure contig names are treated as strings for ID generation
                             u_contig = str(edge_row['contig_u'])
                             v_contig = str(edge_row['contig_v'])
                             node_u = utils.get_node_id(sample_id, u_contig)
                             node_v = utils.get_node_id(sample_id, v_contig)
                             
-                            # Update the edge attribute in the graph
+                            # update the 'read_support' attribute for the existing edge
                             if self.G.has_edge(node_u, node_v):
                                 self.G.edges[node_u, node_v]['read_support'] = float(edge_row['total_support'])
             
-            # data all other processes need
+            # extract all dna sequences from the graph nodes for feature generation
             all_sequences = [self.G.nodes[node_id].get("sequence", "") for node_id in self.node_list]
 
 
+        # --- generate sequence features (evo embeddings) ---
         if self.parameters['feature_generation_method'] == 'evo':
             if is_distributed:
-                # Broadcast the initial data from the main process to all others
+                # in a distributed setting, the main process broadcasts the sequence list to all others
                 if self.accelerator.is_main_process:
                     objects_to_broadcast = [all_sequences]
                 else:
@@ -312,54 +322,49 @@ class Dataset_Pytorch(InMemoryDataset):
                 dist.broadcast_object_list(objects_to_broadcast, src=0)
                 all_sequences = objects_to_broadcast[0]
 
+            # each process computes embeddings for its assigned subset of sequences
             with self.accelerator.split_between_processes(all_sequences) as sequences_split:
                 sequences_on_this_process = list(sequences_split)
-                
-                # Check if there are sequences to process to avoid unnecessary initialization
+
                 if sequences_on_this_process:
                     evo_gen = EvoFeatureGenerator(self.parameters['evo_model_name'], self.accelerator)
                     embeddings_on_this_process = evo_gen.get_embeddings_batch(sequences_on_this_process)
                 else:
                     embeddings_on_this_process = torch.tensor([])
 
-
             if is_distributed:
-                # If distributed, gather the results from all processes.
+                # gather the results from all processes
                 gathered_embeddings = [None] * self.accelerator.num_processes
-                # This is the line that was failing. It's now safely inside the conditional block.
+                # the main process concatenates the gathered tensors into one large tensor
                 dist.all_gather_object(gathered_embeddings, embeddings_on_this_process)
                 
                 if self.accelerator.is_main_process:
                     # On the main process, concatenate the gathered tensors into one.
                     all_embeddings_tensor = torch.cat([t.to(self.accelerator.device) for t in gathered_embeddings if t.numel() > 0], dim=0)
             else:
-                # If not distributed, the results are simply what this one process computed.
+                # if not distributed, the result is simply what the single process computed
                 all_embeddings_tensor = embeddings_on_this_process
         
         elif self.parameters['feature_generation_method'] == 'kmer':
-            pass # K-mer logic is handled on the main process
+            pass # k-mer features are computed directly in `read_graph`
         else:
             raise ValueError(f"Unknown feature_generation_method: {self.parameters['feature_generation_method']}")
 
 
+        # --- final data assembly on the main process ---
         if self.accelerator.is_main_process:
             node_to_idx = {node_id: i for i, node_id in enumerate(self.node_list)}
             edge_list = list(self.G.edges())
 
+            # --- calculate edge similarity ---
             if self.parameters['feature_generation_method'] == 'evo':
-
-                # Calculate similarities on the main process
                 u_indices = [node_to_idx[u] for u, v in edge_list]
                 v_indices = [node_to_idx[v] for u, v in edge_list]
-                
-                # Move indices to the correct device for gathering embeddings
                 u_indices_tensor = torch.tensor(u_indices, device=all_embeddings_tensor.device)
                 v_indices_tensor = torch.tensor(v_indices, device=all_embeddings_tensor.device)
-
                 emb_u = all_embeddings_tensor[u_indices_tensor]
                 emb_v = all_embeddings_tensor[v_indices_tensor]
-
-                # Calculate cosine similarity for all edges at once
+                # calculate cosine similarity between the two embeddings 
                 similarities = F.cosine_similarity(emb_u, emb_v)
             
             elif self.parameters['feature_generation_method'] == 'kmer':
@@ -375,30 +380,24 @@ class Dataset_Pytorch(InMemoryDataset):
 
             self.accelerator.print("Constructing final PyG Data object...")
 
-            # MODIFIED: The edge attribute construction loop is now more flexible
-            # create the final edge attributes list for the PyG Data object
+            # --- construct edge attribute tensor ---
             edge_attr_list = []
-            # Loop over the original edge_list to maintain order with the 'similarities' tensor
             for i, (u, v) in enumerate(edge_list):
-                # Feature 1: Similarity (always present)
                 similarity = similarities[i].item()
-
                 if self.parameters['use_edge_read_counts']:
-                    # Feature 2: Read Count (conditional)
                     read_support = self.G.edges[u, v].get('read_support', 0.0)
-                    # Apply log transform to normalize the scale
+                    # log-transform to handle zeros and compress the feature's range
                     log_read_support = math.log(read_support + 1.0)
                     feature_vector = [similarity, log_read_support]
                 else:
-                    # Default behavior: use similarity only
+                    # default behavior: use similarity only
                     feature_vector = [similarity]
                 
-                # Append feature vector for both directions of the undirected edge
-                edge_attr_list.append(feature_vector)
-                edge_attr_list.append(feature_vector)
+                # append feature vector for both directions of the undirected edge
+                edge_attr_list.extend([feature_vector, feature_vector])
 
 
-            # construct node features (x) and batch tensor
+            # construct node feature matrix (x)
             features = self.parameters["features"]
             x = np.array([[self.G.nodes[node_id][f] for f in features] for node_id in self.node_list])
 
@@ -430,24 +429,27 @@ class Dataset_Pytorch(InMemoryDataset):
                 edge_attr=torch.tensor(edge_attr_list, dtype=torch.float),  # edge features
                 batch=batch_tensor                                          # maps nodes to samples
             )
-
-            
-            # use the parent class's collate method to prepare the data for batching
+       
+            # use `inmemorydataset`'s collate method to prepare data for saving
             processed_data, slices = self.collate([data])
+            # save the final processed data object and metadata to the cache file
             torch.save((processed_data, slices, self.G, self.node_list), self.processed_paths[0])
             self.accelerator.print("✅ Graph data processed and saved.")
 
         if is_distributed:
+            # all processes wait here until the main process finishes saving the file
             self.accelerator.wait_for_everyone()
 
 
 
 def KL(a, b):
+    """calculates the kullback-leibler (kl) divergence between two distributions"""
     a = np.asarray(a, dtype=float)
     b = np.asarray(b, dtype=float)
     return np.sum(np.where(a != 0, a * np.log(a / b), 0))
 
 def weighted_median(values, weights):
+    """computes the weighted median of a set of values"""
     middle = np.sum(weights) / 2
     cum = np.cumsum(weights)
     for (i, x) in enumerate(cum):
@@ -456,13 +458,7 @@ def weighted_median(values, weights):
     assert False
 
 def add_normalized_coverage(graph, current_nodes):
-    """Add attribute coverage_norm which is original coverage divided by median weighted by length.
-    (only for nodes in current_nodes list)"""
-
-    # similarly to Unicycler's computation
-    # from function get_median_read_depth in 
-    # https://github.com/rrwick/Unicycler/blob/main/unicycler/assembly_graph.py
-
+    """normalizes node coverage by the length-weighted median coverage of the sample"""
     sorted_nodes = sorted(current_nodes, key=lambda x : graph.nodes[x]["coverage"])
     lengths = np.array([graph.nodes[x]["length"] for x in sorted_nodes])
     coverages = np.array([graph.nodes[x]["coverage"] for x in sorted_nodes])
@@ -471,14 +467,11 @@ def add_normalized_coverage(graph, current_nodes):
         graph.nodes[node_id]["coverage_norm"] = graph.nodes[node_id]["coverage"] / median
 
 def get_node_coverage(gfa_arguments, seq_length):
-    """Return coverage parsed from dp or estimated from KC tag. 
-    The second return value is True for dp and False for KC"""
-    # try finding dp tag
+    """parses coverage from gfa tags, preferring 'dp' (depth) over 'kc' (k-mer count)"""
     for x in gfa_arguments:
         match =  re.match(r'^dp:f:(.*)$',x)
         if match :
             return (float(match.group(1)), True)
-    # try finding KC tag
     for x in gfa_arguments:
         match =  re.match(r'^KC:i:(.*)$',x)
         if match :
@@ -487,16 +480,14 @@ def get_node_coverage(gfa_arguments, seq_length):
 
 def read_graph(graph_file, csv_file, sample_id, graph, minimum_contig_length):
     """
-    Parses a single GFA file, computes node attributes, and adds its nodes and edges
-    to a pre-existing NetworkX graph object.
+    parses a single gfa file, computes node attributes, adds nodes/edges to the main
+    graph, and attaches labels from an optional csv file
     """
+    current_nodes = []  
+    whole_seq = ""   
+    coverage_types = {True:0, False:0}  
 
-
-    # first pass: read all nodes and compute initial features
-    current_nodes = [] # nodes from this specific file
-    whole_seq = ""  # concatenated contigs
-    coverage_types = {True:0, False:0}  # which coverage types for individual nodes
-
+    # first pass: read all nodes (segments 's') and compute initial features
     with fileinput.input(graph_file, openhook=fileinput.hook_compressed, mode='r') as file:
         for line in file: 
             if isinstance(line, bytes):
@@ -534,14 +525,13 @@ def read_graph(graph_file, csv_file, sample_id, graph, minimum_contig_length):
     # all contigs must use one method or the other
     assert coverage_types[True] == 0 or coverage_types[False] == 0
 
-    # second pass: read all edges
+    # second pass: read all edges (links 'l')
     with fileinput.input(graph_file, openhook=fileinput.hook_compressed, mode='r') as file:
         for line in file: 
             if isinstance(line, bytes):
                 line = line.decode("utf-8")
             parts = line.strip().split("\t")
 
-            # "L" lines represent Links, which are the edges of the graph
             if parts[0] == "L":  
                 graph.add_edge(utils.get_node_id(sample_id, parts[1]),
                                utils.get_node_id(sample_id, parts[3]))
@@ -607,9 +597,7 @@ def read_graph(graph_file, csv_file, sample_id, graph, minimum_contig_length):
         delete_short_contigs(graph, current_nodes, minimum_contig_length)
     
 def delete_short_contigs(graph, node_list, minimum_contig_length):
-    """check length attribute of all contigs in node_list 
-    and if some are shorter than minimum_contig_length,
-    remove them from the graph and connect new neighbors"""
+    """removes contigs shorter than a minimum length, connecting their neighbors"""
     for node_id in node_list:
         if graph.nodes[node_id]["length"] < minimum_contig_length:
             neighbors = list(graph.neighbors(node_id))
@@ -620,28 +608,19 @@ def delete_short_contigs(graph, node_list, minimum_contig_length):
 
 
 def read_single_graph(file_prefix, gfa_file, sample_id, minimum_contig_length):
-    """Read single graph without node labels for testing"""
+    """convenience function to read a single, unlabeled graph for prediction"""
     graph = nx.Graph()
     graph_file = file_prefix + gfa_file
     read_graph(graph_file, None, sample_id, graph, minimum_contig_length)
     return graph
 
 def read_graph_set(file_prefix, file_list, parameters, accelerator, read_labels=True):
-    """
-    Reads and aggregates several individual graph files into a single NetworkX graph.
-
-    This function iterates through a manifest file that lists different samples,
-    and for each sample, it calls a helper function (`read_graph`) to parse the
-    corresponding graph file and add its contents to a unified graph object.
-    """
-
-    # Read all file entries from the manifest
+    """reads a manifest file and aggregates all specified gfa files into one large networkx graph"""
     cols = ('gfa_gz','gfa_csv','edge_csv','sample_id') if parameters['dataset_type']=='new' else ('graph','csv','sample_id')
     all_files = pd.read_csv(file_list, names=cols)
 
-
+    # filter files based on dataset type and assembly configuration
     if parameters['dataset_type'] == 'original':
-        # For the original dataset, apply the old filtering logic
         if parameters["assemblies"] == 'unicycler':
             train_files = all_files[all_files['graph'].str.contains('-u', na=False)].copy()
             if accelerator.is_main_process:
@@ -650,30 +629,23 @@ def read_graph_set(file_prefix, file_list, parameters, accelerator, read_labels=
             train_files = all_files.copy()
             if accelerator.is_main_process:
                 print(f"Found {len(all_files)} total graphs, using all of them as specified for original dataset.")
-    else: # This is for the 'new' dataset type
-        # For the new dataset, we do not filter by filename.
-        # We assume the manifest contains only the desired assemblies.
+    else: # for the 'new' dataset type
+        # we do not filter by filename and assume the manifest contains only the desired assemblies.
         train_files = all_files.copy()
         if accelerator.is_main_process:
             print(f"Found {len(train_files)} total graphs listed in the manifest for new dataset (no filename filtering).")
             
     total_graphs = len(train_files)
-
-
     graph = nx.Graph()
-    for i, (idx, row) in enumerate(train_files.iterrows()):
 
+    for i, (idx, row) in enumerate(train_files.iterrows()):
         if accelerator.is_main_process:
             print(f"Processing graph {i + 1}/{total_graphs}: {row['sample_id']}")
-
         graph_file = file_prefix + (row['gfa_gz'] if parameters['dataset_type']=='new' else row['graph'])
-
         if read_labels:
             csv_file = file_prefix + (row['gfa_csv'] if parameters['dataset_type']=='new' else row['csv']) if read_labels else None
-
         else:
             csv_file = None
-        # Correctly access the value from the parameters object
         read_graph(graph_file, csv_file, row['sample_id'], graph, parameters['minimum_contig_length'])
 
     return graph, train_files

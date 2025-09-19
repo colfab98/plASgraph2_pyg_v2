@@ -9,12 +9,12 @@
 
 export TOKENIZERS_PARALLELISM=false
 
-export RUN_NAME="paper_like2"
+export RUN_NAME="test_new_dt"
 
 mkdir -p runs/${RUN_NAME}/evaluation_results
 
 PYTHONUNBUFFERED=1 accelerate launch --num_processes=1 --mixed_precision=fp16 -m scripts.evaluate \
     --run_name ${RUN_NAME} \
-    plasgraph2-datasets/eskapee-test.csv \
-    plasgraph2-datasets/ \
+    plasgraph2-datasets_new/eskapee-test.csv \
+    plasgraph2-datasets_new/ \
     > runs/${RUN_NAME}/evaluation_results/eval.log 2> runs/${RUN_NAME}/evaluation_results/eval.err

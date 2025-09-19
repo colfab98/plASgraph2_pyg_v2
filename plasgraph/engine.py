@@ -29,16 +29,15 @@ import torch.distributed as dist
 
 
 def objective(trial, accelerator, parameters, data, sample_splits, all_sample_ids, labeled_indices, node_list, G):
-
     """
-    Optuna objective function with K-fold cross-validation.
+    optuna objective function for hyperparameter optimization using k-fold cross-validation
     """
-
-    # set a user attribute to store the process ID, useful for debugging in parallel environments
+    # store the process id for debugging in parallel environments
     trial.set_user_attr("pid", os.getpid())
 
-    # use the 'trial' object to suggest hyperparameter values for Optuna to optimize
+    # create a copy of base parameters to modify for this specific trial
     trial_params_dict = parameters._params.copy()
+    # use the 'trial' object to suggest hyperparameter values for optuna to optimize
     trial_params_dict['l2_reg'] = trial.suggest_float("l2_reg", 1e-5, 1e-3, log=True)
     trial_params_dict['n_channels'] = trial.suggest_int("n_channels", 8, 64, step=16)
     trial_params_dict['n_gnn_layers'] = trial.suggest_int("n_gnn_layers", 2, 6)
@@ -48,19 +47,19 @@ def objective(trial, accelerator, parameters, data, sample_splits, all_sample_id
     trial_params_dict['n_channels_preproc'] = trial.suggest_int("n_channels_preproc", 10, 25, step=5)
     trial_params_dict['edge_gate_depth'] = trial.suggest_int("edge_gate_depth", 2, 6)
     trial_params_dict['batch_size'] = trial.suggest_categorical('batch_size', [64, 128 , 256, 512, 1024])
+    # ensure subsequent hop neighbors are less than or equal to the first hop
     first_hop_val = trial.suggest_int("neighbors_first_hop", 10, 50, step=10)
     trial_params_dict['first_hop_neighbors'] = first_hop_val
     trial_params_dict['subsequent_hop_neighbors'] = trial.suggest_int("neighbors_subsequent_hops", 10, first_hop_val, step=5)
-
     trial_params_dict['learning_rate'] = trial.suggest_float("learning_rate", 1e-5, 1e-2, log=True)
 
+    # construct the list of neighbors to sample for each gnn layer
     n_layers = trial_params_dict['n_gnn_layers']
     first_hop_neighbors = trial_params_dict['first_hop_neighbors']
     subsequent_hop_neighbors = trial_params_dict['subsequent_hop_neighbors']
     neighbors_list = [first_hop_neighbors] + [subsequent_hop_neighbors] * (n_layers - 1)
 
-    
-    # temporary config object using the suggested hyperparameters for this trial
+    # create a temporary config object for this trial's hyperparameters
     trial_config_obj = config.config(parameters.config_file_path)
     trial_config_obj._params = trial_params_dict
 
@@ -68,55 +67,52 @@ def objective(trial, accelerator, parameters, data, sample_splits, all_sample_id
     # move the graph data object to the correct device
     data = data.to(device)
 
+    # create mappings from sample id to its index in the batch tensor
     unique_samples_from_graph = sorted(list(set(node_id.split(':')[0] for node_id in node_list)))
-
     sample_to_batch_idx = {sample_id: i for i, sample_id in enumerate(unique_samples_from_graph)}
 
-    fold_aurocs = []
-
+    fold_aurocs = []    # list to store the final score for each fold
     labeled_nodes_set = set(labeled_indices)
 
-    # k-fold cross-validation loop
+    # --- k-fold cross-validation loop ---
     for fold_idx, (train_sample_indices, val_sample_indices) in enumerate(sample_splits):
-
+        # get the actual sample ids for this fold's train and validation sets
         train_samples = all_sample_ids[train_sample_indices]
         val_samples = all_sample_ids[val_sample_indices]
-
+        # get the corresponding batch indices for these samples
         train_batch_indices = [sample_to_batch_idx[sid] for sid in train_samples]
         val_batch_indices = [sample_to_batch_idx[sid] for sid in val_samples]
-
+        # create boolean masks to select nodes belonging to the train/val samples
         train_mask = torch.isin(data.batch, torch.tensor(train_batch_indices, device=data.batch.device))
         val_mask = torch.isin(data.batch, torch.tensor(val_batch_indices, device=data.batch.device))
-
+        # get the global indices of the nodes for this fold
         train_node_indices = torch.where(train_mask)[0]
         val_node_indices = torch.where(val_mask)[0]
-
+        # create subgraphs for training and validation for this fold
         train_data = data.subgraph(train_node_indices)
         val_data = data.subgraph(val_node_indices)
-
+        # find the global indices of labeled nodes within this fold's train/val sets
         train_nodes_global_set = set(train_node_indices.cpu().numpy())
         val_nodes_global_set = set(val_node_indices.cpu().numpy())
-
         train_fold_labeled_global = torch.tensor(sorted(list(train_nodes_global_set.intersection(labeled_nodes_set))), dtype=torch.long)
         val_fold_labeled_global = torch.tensor(sorted(list(val_nodes_global_set.intersection(labeled_nodes_set))), dtype=torch.long)
-
+        # map from global node indices to the local indices within the new subgraphs
         global_to_local_train_map = {global_idx.item(): local_idx for local_idx, global_idx in enumerate(train_node_indices)}
         global_to_local_val_map = {global_idx.item(): local_idx for local_idx, global_idx in enumerate(val_node_indices)}
-
+        # get the local indices that will be used as seed nodes for the neighbor loaders
         local_train_seed_indices = torch.tensor([global_to_local_train_map[global_idx.item()] for global_idx in train_fold_labeled_global], dtype=torch.long)
         local_val_seed_indices = torch.tensor([global_to_local_val_map[global_idx.item()] for global_idx in val_fold_labeled_global], dtype=torch.long)
-
 
         if len(local_train_seed_indices) == 0 or len(local_val_seed_indices) == 0:
             continue
         
-        # initialize the model
+        # initialize the model based on the config
         if trial_config_obj['model_type'] == 'GCNModel':
             model = GCNModel(trial_config_obj).to(device)
         elif trial_config_obj['model_type'] == 'GGNNModel':
             model = GGNNModel(trial_config_obj).to(device)
 
-        # Adam optimizer with the trial's learning rate and L2 regularization
+        # setup optimizer, scheduler, and loss function
         optimizer = torch.optim.Adam(model.parameters(), lr=trial_config_obj['learning_rate'], weight_decay=trial_config_obj['l2_reg'])
         # learning rate scheduler to reduce the learning rate on validation loss plateau
         scheduler = ReduceLROnPlateau(optimizer, 'min', factor=trial_config_obj['scheduler_factor'], patience=trial_config_obj['scheduler_patience'])
@@ -125,13 +121,13 @@ def objective(trial, accelerator, parameters, data, sample_splits, all_sample_id
 
         # NeighborLoader for the training set of this fold
         train_loader = NeighborLoader(
-            train_data,
-            input_nodes=local_train_seed_indices.to(device),
-            num_neighbors=neighbors_list,                                       # neighborhood sampling sizes
-            shuffle=True,                                                       # shuffle the data at each epoch
-            batch_size=trial_config_obj['batch_size'],                          # use the batch size suggested by Optuna
+            train_data,     # the subgraph for this training fold
+            input_nodes=local_train_seed_indices.to(device),    # seed nodes are the labeled nodes
+            num_neighbors=neighbors_list,   # neighborhood sampling sizes per layer
+            shuffle=True,    # shuffle the data at each epoch
+            batch_size=trial_config_obj['batch_size'],    # use the batch size suggested by Optuna
             num_workers=trial_config_obj['num_workers'],
-            pin_memory=True,                                                    # for faster data transfer to GPU
+            pin_memory=True,     # for faster data transfer to GPU
         )
 
         # NeighborLoader for the validation set of this fold
@@ -139,7 +135,7 @@ def objective(trial, accelerator, parameters, data, sample_splits, all_sample_id
             val_data,
             input_nodes=local_val_seed_indices.to(device),
             num_neighbors=neighbors_list,
-            shuffle=False,                                                      # no need to shuffle validation data
+            shuffle=False,     # no need to shuffle validation data
             batch_size=trial_config_obj['batch_size'],
             num_workers=trial_config_obj['num_workers'],
             pin_memory=True,
@@ -150,7 +146,7 @@ def objective(trial, accelerator, parameters, data, sample_splits, all_sample_id
         patience_for_fold = 0
         best_model_state_for_fold = None
 
-        # start the training loop for the number of epochs specified for HPO trials
+        # --- training loop for the number of epochs specified for hpo trials ---
         for epoch in range(parameters["epochs_trials"]):
             # set the model to training mode
             model.train()
@@ -163,7 +159,7 @@ def objective(trial, accelerator, parameters, data, sample_splits, all_sample_id
                 fix_gradients(trial_config_obj, model)      # apply gradient clipping/fixing
                 optimizer.step()                            # update the model weights
 
-            # validation loop
+            # --- validation loop ---
             model.eval()
             total_val_loss = 0
             with torch.no_grad():                           # disable gradient computation for validation
@@ -173,9 +169,9 @@ def objective(trial, accelerator, parameters, data, sample_splits, all_sample_id
                     val_loss = criterion(outputs[:batch.batch_size], batch.y[:batch.batch_size])
                     total_val_loss += val_loss.item()
             
-            # calculate the average validation loss for the epoch
-            avg_val_loss = total_val_loss / len(val_loader)
-            scheduler.step(avg_val_loss)
+            avg_val_loss = total_val_loss / len(val_loader)     # calculate the average validation loss for the epoch
+            scheduler.step(avg_val_loss)    # update learning rate scheduler
+
 
             # check for improvement in validation loss for early stopping
             if avg_val_loss < best_val_loss_for_fold:
@@ -188,10 +184,9 @@ def objective(trial, accelerator, parameters, data, sample_splits, all_sample_id
                 if patience_for_fold >= parameters["early_stopping_patience"]:
                     break
             
-
-        # --- final evaluation for the fold ---
-
+        # --- final evaluation for the fold using the best model state ---
         if best_model_state_for_fold is not None:
+            # create a new model instance for inference
             if trial_config_obj['model_type'] == 'GCNModel':
                 inference_model = GCNModel(trial_config_obj).to(device)
             else:
@@ -206,39 +201,40 @@ def objective(trial, accelerator, parameters, data, sample_splits, all_sample_id
                 for batch in val_loader:
                     batch = batch.to(device)
                     outputs = inference_model(batch)
+                    # convert logits to probabilities using sigmoid
                     all_probs_fold.append(torch.sigmoid(outputs[:batch.batch_size]))
                     all_true_fold.append(batch.y[:batch.batch_size])
 
             if not all_probs_fold:
                 continue
             
+            # concatenate results from all validation batches
             y_probs_fold = torch.cat(all_probs_fold).cpu()
             y_true_fold = torch.cat(all_true_fold).cpu()
 
-            # --- MODIFIED: Simplified and robust AUROC calculation ---
-            auroc_p, auroc_c = 0.5, 0.5 # Default to 0.5 if calculation is not possible
-
-            # Plasmid AUROC
+            # --- calculate auroc robustly, defaulting to 0.5 if a class is missing ---
+            auroc_p, auroc_c = 0.5, 0.5  
+            # plasmid AUROC
             y_true_p = y_true_fold[:, 0].numpy()
             y_probs_p = y_probs_fold[:, 0].numpy()
             if len(np.unique(y_true_p)) > 1:
                 auroc_p = roc_auc_score(y_true_p, y_probs_p)
-
-            # Chromosome AUROC
+            # chromosome AUROC
             y_true_c = y_true_fold[:, 1].numpy()
             y_probs_c = y_probs_fold[:, 1].numpy()
             if len(np.unique(y_true_c)) > 1:
                 auroc_c = roc_auc_score(y_true_c, y_probs_c)
 
-            # Average AUROC for the fold
+             # use average of plasmid and chromosome auroc
             avg_auroc_for_fold = (auroc_p + auroc_c) / 2.0
             fold_aurocs.append(avg_auroc_for_fold)
 
+            # report intermediate value to optuna for pruning
             trial.report(avg_auroc_for_fold, fold_idx)
             if trial.should_prune():
                 raise optuna.exceptions.TrialPruned()
 
-
+    # final objective value is the mean auroc across all folds
     final_objective_value = np.mean(fold_aurocs)
     return final_objective_value
 
@@ -246,10 +242,8 @@ def objective(trial, accelerator, parameters, data, sample_splits, all_sample_id
 
 
 def train_final_model(accelerator, parameters, data, sample_splits, all_sample_ids, labeled_indices, log_dir, G, node_list):
-    
     """
-    Trains K-fold models on a single GPU and saves each one for ensembling.
-    This version is aligned with the trial training logic for consistency.
+    trains k-fold models on a single gpu and saves each one for ensembling
     """
     print("\n" + "="*60)
     print("💾 Training K-Fold Ensemble Models (Single-GPU)")
@@ -267,6 +261,7 @@ def train_final_model(accelerator, parameters, data, sample_splits, all_sample_i
     cv_plots_dir = os.path.join(log_dir, "cv_fold_plots")
     os.makedirs(cv_plots_dir, exist_ok=True)
 
+    # setup for data splitting (same logic as in `objective` function)
     unique_samples_from_graph = sorted(list(set(node_id.split(':')[0] for node_id in node_list)))
     sample_to_batch_idx = {sample_id: i for i, sample_id in enumerate(unique_samples_from_graph)}
     labeled_nodes_set = set(labeled_indices)
@@ -275,40 +270,35 @@ def train_final_model(accelerator, parameters, data, sample_splits, all_sample_i
     n_layers = parameters['n_gnn_layers']
     first_hop_neighbors = parameters['neighbors_first_hop']
     subsequent_hop_neighbors = parameters['neighbors_subsequent_hops']
-
     neighbors_list = [first_hop_neighbors] + [subsequent_hop_neighbors] * (n_layers - 1)
 
-    # start the main loop to iterate through each cross-validation fold
+    # --- main loop to iterate through each cross-validation fold ---
     for fold_idx, (train_sample_indices, val_sample_indices) in enumerate(sample_splits):
         print(f"\n--- Running Fold {fold_idx + 1}/{len(sample_splits)} ---")
-
+        # get sample ids and batch indices for this fold
         train_samples = all_sample_ids[train_sample_indices]
         val_samples = all_sample_ids[val_sample_indices]
         train_batch_indices = [sample_to_batch_idx[sid] for sid in train_samples]
         val_batch_indices = [sample_to_batch_idx[sid] for sid in val_samples]
-
+        # create node masks and subgraphs for this fold
         train_mask = torch.isin(data.batch, torch.tensor(train_batch_indices, device=data.batch.device))
         val_mask = torch.isin(data.batch, torch.tensor(val_batch_indices, device=data.batch.device))
         train_node_indices = torch.where(train_mask)[0]
         val_node_indices = torch.where(val_mask)[0]
-
         train_data = data.subgraph(train_node_indices)
         val_data = data.subgraph(val_node_indices)
         print(f"  Train samples: {len(train_samples)}, Nodes: {train_data.num_nodes} | Val samples: {len(val_samples)}, Nodes: {val_data.num_nodes}")
-
+        # get local seed indices for the neighbor loaders
         train_nodes_global_set = set(train_node_indices.cpu().numpy())
         val_nodes_global_set = set(val_node_indices.cpu().numpy())
-
         train_fold_labeled_global = torch.tensor(sorted(list(train_nodes_global_set.intersection(labeled_nodes_set))), dtype=torch.long)
         val_fold_labeled_global = torch.tensor(sorted(list(val_nodes_global_set.intersection(labeled_nodes_set))), dtype=torch.long)
-
         global_to_local_train_map = {global_idx.item(): local_idx for local_idx, global_idx in enumerate(train_node_indices)}
         global_to_local_val_map = {global_idx.item(): local_idx for local_idx, global_idx in enumerate(val_node_indices)}
-
         local_train_seed_indices = torch.tensor([global_to_local_train_map[global_idx.item()] for global_idx in train_fold_labeled_global], dtype=torch.long)
         local_val_seed_indices = torch.tensor([global_to_local_val_map[global_idx.item()] for global_idx in val_fold_labeled_global], dtype=torch.long)
 
-
+        # initialize model, optimizer, scheduler, and criterion
         if parameters['model_type'] == 'GCNModel':
             model = GCNModel(parameters).to(device)
         elif parameters['model_type'] == 'GGNNModel':
@@ -319,7 +309,7 @@ def train_final_model(accelerator, parameters, data, sample_splits, all_sample_i
         criterion = torch.nn.BCEWithLogitsLoss(reduction='sum')
 
         num_workers = parameters['num_workers']
-
+        # setup data loaders for this fold
         train_loader = NeighborLoader(
             train_data,
             input_nodes=local_train_seed_indices.to(device),
@@ -340,11 +330,13 @@ def train_final_model(accelerator, parameters, data, sample_splits, all_sample_i
             pin_memory=True,
         )
 
+        # variables for training loop and early stopping
         best_val_loss_for_fold, patience_for_fold, best_epoch_for_fold = float("inf"), 0, 0
         best_model_state_for_fold = None
         train_losses_fold, val_losses_fold = [], []
         plot_frequency = max(1, parameters["epochs"] // 10)
 
+        # --- main training loop ---
         for epoch in range(parameters["epochs"]):
             model.train()
             total_train_loss = 0
@@ -361,6 +353,7 @@ def train_final_model(accelerator, parameters, data, sample_splits, all_sample_i
             avg_train_loss = total_train_loss / len(train_loader) if len(train_loader) > 0 else 0
             train_losses_fold.append(avg_train_loss)
 
+            # plot gradient magnitudes periodically for the first fold to diagnose training
             if fold_idx == 0: 
                 utils.plot_gradient_magnitudes(utils.get_gradient_magnitudes(model), epoch + 1, cv_plots_dir, plot_frequency=plot_frequency)
             
@@ -377,9 +370,11 @@ def train_final_model(accelerator, parameters, data, sample_splits, all_sample_i
             val_losses_fold.append(avg_val_loss)
             scheduler.step(avg_val_loss)
 
+            # logging progress
             if (epoch + 1) % 10 == 0 or (epoch + 1) == parameters["epochs"]:
                 print(f"Epoch {epoch + 1}/{parameters['epochs']} | Train Loss: {avg_train_loss:.4f} | Val Loss: {avg_val_loss:.4f}")
 
+            # early stopping logic
             if avg_val_loss < best_val_loss_for_fold:
                 best_val_loss_for_fold = avg_val_loss
                 best_epoch_for_fold = epoch + 1
@@ -393,20 +388,21 @@ def train_final_model(accelerator, parameters, data, sample_splits, all_sample_i
         
         print(f"Fold {fold_idx + 1} finished. Best epoch: {best_epoch_for_fold} with val loss: {best_val_loss_for_fold:.4f}")
 
-        # --- save the best model, plot training history, and determine thresholds ---
+        # --- after training a fold: save model, plot history, and determine thresholds ---
         if best_model_state_for_fold:
+            # save the best model state for this fold
             model_save_path = os.path.join(ensemble_models_dir, f"fold_{fold_idx + 1}_model.pt")
             torch.save(best_model_state_for_fold, model_save_path)
             print(f"  > Saved best model for fold {fold_idx + 1} to: {model_save_path}")
-
+            # plot and save the training and validation loss history for this fold
             plt.figure(figsize=(10, 6)); plt.plot(train_losses_fold, label='Train Loss'); plt.plot(val_losses_fold, label='Validation Loss'); plt.axvline(x=best_epoch_for_fold - 1, color='r', linestyle='--', label=f'Best Epoch ({best_epoch_for_fold})'); plt.title(f'Fold {fold_idx + 1} Training History'); plt.xlabel('Epoch'); plt.ylabel('Loss'); plt.legend(); plt.grid(True); plot_path = os.path.join(cv_plots_dir, f"cv_loss_fold_{fold_idx + 1}.png"); plt.savefig(plot_path); plt.close()
             print(f"  > Saved loss plot to: {plot_path}")
 
+            # --- determine and save optimal classification thresholds on the validation set ---
             if parameters['model_type'] == 'GCNModel':
                 inference_model = GCNModel(parameters).to(device)
             else:
                 inference_model = GGNNModel(parameters).to(device)
-            
             inference_model.load_state_dict(best_model_state_for_fold)
             inference_model.eval()
 
@@ -417,14 +413,14 @@ def train_final_model(accelerator, parameters, data, sample_splits, all_sample_i
                     outputs = inference_model(batch)
                     all_probs_val.append(torch.sigmoid(outputs[:batch.batch_size]))
                     all_true_val.append(batch.y[:batch.batch_size])
-
-            
             y_probs_val_fold = torch.cat(all_probs_val).cpu()
             y_true_val_fold = torch.cat(all_true_val).cpu()
 
+            # find and set the best thresholds based on f1-score
             fold_params = copy.deepcopy(parameters)
             utils.set_thresholds_from_predictions(y_true_val_fold, y_probs_val_fold, fold_params, log_dir)
             
+            # save the determined thresholds to a yaml file for this fold
             threshold_save_path = os.path.join(ensemble_models_dir, f"fold_{fold_idx + 1}_thresholds.yaml")
             with open(threshold_save_path, 'w') as f:
                 yaml.dump({'plasmid_threshold': fold_params['plasmid_threshold'], 'chromosome_threshold': fold_params['chromosome_threshold']}, f)
@@ -432,41 +428,33 @@ def train_final_model(accelerator, parameters, data, sample_splits, all_sample_i
 
             print(f"\n--- Evaluating Fold {fold_idx + 1} Model on its Full Validation Set ---")
             
-            # 9. Scatter validation predictions back to full-size tensors for metric calculation
+            # evaluate the fold's model on its validation set using the new thresholds
             final_scores_val_fold = torch.from_numpy(utils.apply_thresholds(y_probs_val_fold.numpy(), fold_params))
             
-            # Global indices of the nodes that were in the validation subgraph
-            val_node_indices_global = val_node_indices.cpu()
-
+            # create full-size tensors to hold the validation predictions for the metrics function
             raw_probs_full = torch.zeros_like(data.y, dtype=torch.float, device='cpu')
             final_scores_full = torch.zeros_like(data.y, dtype=torch.float, device='cpu')
-
+            # scatter the validation predictions back to their original global node indices
             raw_probs_full.scatter_(0, val_fold_labeled_global.cpu().unsqueeze(1).expand(-1, 2), y_probs_val_fold)
             final_scores_full.scatter_(0, val_fold_labeled_global.cpu().unsqueeze(1).expand(-1, 2), final_scores_val_fold)
-
-
+            # create a mask for the validation nodes
             masks_validate = torch.zeros(data.num_nodes, dtype=torch.float32, device='cpu')
             masks_validate[val_fold_labeled_global] = 1.0
-
+            # calculate and print the final metrics for this fold
             calculate_and_print_metrics(final_scores_full.to(device), raw_probs_full.to(device), data, masks_validate.to(device), G, node_list, verbose=False)
 
 
 
 
-# In plasgraph/engine.py
-# ... (existing functions are above) ...
+# --- functions for inference on new, unseen graphs ---
 import pandas as pd
 import torch_geometric
 
-# Import from our own library
 from .data import read_single_graph
 from .utils import apply_thresholds, pair_to_label
 
 def predict(model, graph, parameters):
-    """
-    Applies the model to a graph to get predictions.
-    (This function was formerly apply_to_graph in architecture.py)
-    """
+    """applies a trained model to a graph to get predictions"""
     device = next(model.parameters()).device
     graph = graph.to(device)
     model.eval()
@@ -476,7 +464,6 @@ def predict(model, graph, parameters):
     preds_np = output.cpu().numpy()
     preds_clipped = np.clip(preds_np, 0, 1)
     
-    # Apply the custom thresholds to get final scores
     preds_final = apply_thresholds(preds_clipped, parameters)
     preds_final = np.clip(preds_final, 0, 1)
     
@@ -484,24 +471,19 @@ def predict(model, graph, parameters):
 
 def classify_graph(model, parameters, graph_file, file_prefix, sample_id):
     """
-    Loads a single graph file, classifies it, and returns a results DataFrame.
-    (This logic comes from test_one in plASgraph2_classify.py)
+    loads a single graph file, classifies its nodes, and returns a results dataframe
     """
-    # 1. Load and process the graph data
     G = read_single_graph(file_prefix, graph_file, sample_id, parameters['minimum_contig_length'])
     node_list = list(G)
 
-    # Calculate k-mer dot products for edges
     for u, v in G.edges():
         kmer_u = np.array(G.nodes[u]["kmer_counts_norm"])
         kmer_v = np.array(G.nodes[v]["kmer_counts_norm"])
         dot_product = np.dot(kmer_u, kmer_v)
         G.edges[u, v]["kmer_dot_product"] = dot_product
-    
-    # 2. Prepare graph for PyTorch Geometric
+
     features = parameters["features"]
     x = np.array([[G.nodes[node_id][f] for f in features] for node_id in node_list])
-    
     
     node_to_idx = {node_id: i for i, node_id in enumerate(node_list)}
     edge_sources, edge_targets, edge_attrs = [], [], []
@@ -516,15 +498,11 @@ def classify_graph(model, parameters, graph_file, file_prefix, sample_id):
         x=torch.tensor(x, dtype=torch.float),
         edge_index=torch.tensor(np.vstack((edge_sources, edge_targets)), dtype=torch.long),
         edge_attr=torch.tensor(edge_attrs, dtype=torch.float),
-        # Add a batch tensor of all zeros for the single graph
         batch=torch.zeros(x.shape[0], dtype=torch.long)
     )
 
-
-    # 3. Run prediction using the model
     preds = predict(model, data_obj, parameters)
 
-    # 4. Format results into a DataFrame
     output_rows = []
     for i, node_id in enumerate(node_list):
         plasmid_score = preds[i, 0]
