@@ -63,14 +63,14 @@ def sequence_collate_fn(batch):
 
 
 
-class EvoFeatureGenerator:
+class EmbFeatureGenerator:
     """
-    manages the evo dna foundation model for generating sequence embeddings.
+    manages the dna foundation model for generating sequence embeddings.
     handles model loading, device placement, and efficient batch processing of sequences
     of any length, with support for multi-gpu inference via accelerate
     """
     def __init__(self, model_name, accelerator: Accelerator):
-        print(f"Initializing EvoFeatureGenerator with model: {model_name} on device: {accelerator.device}")
+        print(f"Initializing DNABertFeatureGenerator with model: {model_name} on device: {accelerator.device}")
         self.accelerator = accelerator
         # load the pre-trained tokenizer; `trust_remote_code` is needed for custom model architectures
         self.tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
@@ -311,8 +311,8 @@ class Dataset_Pytorch(InMemoryDataset):
             all_sequences = [self.G.nodes[node_id].get("sequence", "") for node_id in self.node_list]
 
 
-        # --- generate sequence features (evo embeddings) ---
-        if self.parameters['feature_generation_method'] == 'evo':
+        # --- generate sequence features (transformer embeddings) ---
+        if self.parameters['feature_generation_method'] == 'emb':
             if is_distributed:
                 # in a distributed setting, the main process broadcasts the sequence list to all others
                 if self.accelerator.is_main_process:
@@ -327,8 +327,8 @@ class Dataset_Pytorch(InMemoryDataset):
                 sequences_on_this_process = list(sequences_split)
 
                 if sequences_on_this_process:
-                    evo_gen = EvoFeatureGenerator(self.parameters['evo_model_name'], self.accelerator)
-                    embeddings_on_this_process = evo_gen.get_embeddings_batch(sequences_on_this_process)
+                    emb_gen = EmbFeatureGenerator(self.parameters['emb_model_name'], self.accelerator)
+                    embeddings_on_this_process = emb_gen.get_embeddings_batch(sequences_on_this_process)
                 else:
                     embeddings_on_this_process = torch.tensor([])
 
@@ -357,7 +357,7 @@ class Dataset_Pytorch(InMemoryDataset):
             edge_list = list(self.G.edges())
 
             # --- calculate edge similarity ---
-            if self.parameters['feature_generation_method'] == 'evo':
+            if self.parameters['feature_generation_method'] == 'emb':
                 u_indices = [node_to_idx[u] for u, v in edge_list]
                 v_indices = [node_to_idx[v] for u, v in edge_list]
                 u_indices_tensor = torch.tensor(u_indices, device=all_embeddings_tensor.device)

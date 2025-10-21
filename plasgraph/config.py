@@ -9,8 +9,8 @@ PARAMS = [
     {'name': 'n_input_features', 'type': int, 'default': 6}, # total number of input node features, which must match the count in 'features'
     {'name': 'n_labels', 'type': int, 'default': 2}, # number of output classes for the classification task (e.g., 2 for plasmid/chromosome)
     {'name': 'minimum_contig_length', 'type': int, 'default': 100}, # shortest a contig can be to be included in the graph; shorter ones are removed
-    {'name': 'feature_generation_method', 'type': str, 'default': 'evo'}, # method for generating sequence features; can be 'evo' for a Transformer model or 'kmer'
-    {'name': 'evo_model_name', 'type': str, 'default': 'nvidia/Evo-2-8B-base'}, # specific name of the pre-trained Evo model to use if 'feature_generation_method' is 'evo'
+    {'name': 'feature_generation_method', 'type': str, 'default': 'emb'}, # method for generating sequence features; can be 'emb' for a Transformer model or 'kmer'
+    {'name': 'emb_model_name', 'type': str, 'default': 'zhihan1996/DNABERT-2-117M'}, # specific name of the pre-trained DNABert model to use if 'feature_generation_method' is 'emb'
     {'name': 'num_workers', 'type': int, 'default': 12}, # number of CPU worker processes to use for loading data in parallel
     {'name': 'assemblies', 'type': str, 'default': 'unicycler'}, 
     {'name': 'dataset_type', 'type': str, 'default': 'new'}, # Determines manifest format. Options: 'original', 'new'

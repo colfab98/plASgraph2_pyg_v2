@@ -12,7 +12,7 @@ conda activate plasgraph
 
 export TOKENIZERS_PARALLELISM=false
 
-export RUN_NAME="eskapee_v3"
+export RUN_NAME="evo_test"
 
 mkdir -p runs/${RUN_NAME}
 

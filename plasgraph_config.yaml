@@ -3,8 +3,8 @@ features: coverage_norm,gc_norm,kmer_dot,degree,length_norm,loglength
 n_input_features: 6
 n_labels: 2
 minimum_contig_length: 100
-feature_generation_method: evo
-evo_model_name: zhihan1996/DNABERT-2-117M
+feature_generation_method: emb
+emb_model_name: zhihan1996/DNABERT-2-117M
 num_workers: 8   
 
 # Model Architecture Parameters
