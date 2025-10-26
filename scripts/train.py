@@ -105,55 +105,71 @@ def main():
     # Get indices of all nodes that have a label
     labeled_indices = np.array([i for i, node_id in enumerate(node_list) if G.nodes[node_id]["text_label"] != "unlabeled"])
 
-    # --- Stratification Logic (This entire block is new) ---
-    print("🔬 Analyzing sample characteristics for stratified splitting...")
-    sample_plasmid_ratios = []
-    for sample_id in all_sample_ids:
-        sample_nodes = [nid for nid in node_list if G.nodes[nid]["sample"] == sample_id]
-        
-        # Count plasmid vs. total labeled nodes for this sample
-        plasmid_count = 0
-        labeled_count = 0
-        for nid in sample_nodes:
-            # Check if the node has a definitive label
-            if G.nodes[nid]["text_label"] != "unlabeled":
-                labeled_count += 1
-                # Check if the label is 'plasmid' ([1, 0])
-                if G.nodes[nid]["plasmid_label"] == 1 and G.nodes[nid]["chrom_label"] == 0:
-                    plasmid_count += 1
-        
-        # Calculate the ratio
-        ratio = plasmid_count / labeled_count if labeled_count > 0 else 0.0
-        sample_plasmid_ratios.append(ratio)
+    splits = None # Initialize splits
 
-    # Discretize ratios into bins for stratification
-    try:
-        # Use quantiles to create balanced bins
-        stratification_y = pd.qcut(sample_plasmid_ratios, q=5, labels=False, duplicates='drop')
-    except ValueError:
-        # Fallback to simple binning if quantiles fail (e.g., too few unique values)
-        stratification_y = pd.cut(sample_plasmid_ratios, bins=5, labels=False, duplicates='drop')
-    print("  > Stratification groups created based on plasmid ratios.")
+    if parameters['validation_split_mode'] == 'stratified':
+        # --- START OF EXISTING LOGIC (UNCHANGED, JUST INDENTED) ---
+        print("🔬 Analyzing sample characteristics for stratified splitting...")
+        sample_plasmid_ratios = []
+        for sample_id in all_sample_ids:
+            sample_nodes = [nid for nid in node_list if G.nodes[nid]["sample"] == sample_id]
+            
+            # Count plasmid vs. total labeled nodes for this sample
+            plasmid_count = 0
+            labeled_count = 0
+            for nid in sample_nodes:
+                # Check if the node has a definitive label
+                if G.nodes[nid]["text_label"] != "unlabeled":
+                    labeled_count += 1
+                    # Check if the label is 'plasmid' ([1, 0])
+                    if G.nodes[nid]["plasmid_label"] == 1 and G.nodes[nid]["chrom_label"] == 0:
+                        plasmid_count += 1
+            
+            # Calculate the ratio
+            ratio = plasmid_count / labeled_count if labeled_count > 0 else 0.0
+            sample_plasmid_ratios.append(ratio)
+
+        # Discretize ratios into bins for stratification
+        try:
+            # Use quantiles to create balanced bins
+            stratification_y = pd.qcut(sample_plasmid_ratios, q=5, labels=False, duplicates='drop')
+        except ValueError:
+            # Fallback to simple binning if quantiles fail (e.g., too few unique values)
+            stratification_y = pd.cut(sample_plasmid_ratios, bins=5, labels=False, duplicates='drop')
+        print("  > Stratification groups created based on plasmid ratios.")
 
 
-    # --- This if/else block was modified ---
-    if parameters['training_mode'] == 'k-fold':
-        print(f"✅ Setting up stratified {parameters['k_folds']}-fold cross-validation based on samples.")
-        skf = StratifiedKFold(n_splits=parameters["k_folds"], shuffle=True, random_state=parameters["random_seed"])
-        # Create splits based on the indices of the sample IDs array, stratified by y
-        splits = list(skf.split(all_sample_ids, stratification_y))
-    else: # single-fold
-        print("✅ Setting up stratified single-fold training with an 80/20 train/validation split.")
-        # Create a single 80/20 stratified split of sample IDs
-        train_s_idx, val_s_idx = train_test_split(
-            np.arange(len(all_sample_ids)), # Split the indices of the sample_ids array
-            test_size=0.2,
-            random_state=parameters["random_seed"],
-            shuffle=True,
-            stratify=stratification_y # Use the generated strata
-        )
-        # The train_final_model function expects a list of splits
-        splits = [(train_s_idx, val_s_idx)]
+        # --- This if/else block was modified ---
+        if parameters['training_mode'] == 'k-fold':
+            print(f"✅ Setting up stratified {parameters['k_folds']}-fold cross-validation based on samples.")
+            skf = StratifiedKFold(n_splits=parameters["k_folds"], shuffle=True, random_state=parameters["random_seed"])
+            # Create splits based on the indices of the sample IDs array, stratified by y
+            splits = list(skf.split(all_sample_ids, stratification_y))
+        else: # single-fold
+            print("✅ Setting up stratified single-fold training with an 80/20 train/validation split.")
+            # Create a single 80/20 stratified split of sample IDs
+            train_s_idx, val_s_idx = train_test_split(
+                np.arange(len(all_sample_ids)), # Split the indices of the sample_ids array
+                test_size=0.2,
+                random_state=parameters["random_seed"],
+                shuffle=True,
+                stratify=stratification_y # Use the generated strata
+            )
+            # The train_final_model function expects a list of splits
+            splits = [(train_s_idx, val_s_idx)]
+        # --- END OF EXISTING LOGIC ---
+
+    elif parameters['validation_split_mode'] == 'node_level_random':
+        # --- START OF NEW LOGIC ---
+        print("🔬 Using node-level random 80/20 split (Original TF-style).")
+        if parameters['training_mode'] == 'k-fold':
+            raise ValueError(f"validation_split_mode 'node_level_random' is not compatible with training_mode 'k-fold'.")
+        # Pass [None] to signal to the engine to run its loop once and generate the node-level split internally.
+        splits = [None]
+        # --- END OF NEW LOGIC ---
+    
+    else:
+        raise ValueError(f"Unknown validation_split_mode: {parameters['validation_split_mode']}")
 
 
     # train the K-fold ensemble

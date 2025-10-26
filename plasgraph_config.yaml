@@ -42,6 +42,7 @@ batch_size: 8192
 
 # HPO and Evaluation Parameters
 k_folds: 5
+validation_split_mode: stratified
 optuna_n_trials: 50
 epochs_trials: 500
 n_startup_trials: 10 

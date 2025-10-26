@@ -119,8 +119,13 @@ def main():
                 temp_params['chromosome_threshold'] = thresholds['chromosome_threshold']
 
                 # get raw probabilities (for AUROC calculation)
-                logits = model(data_test)
-                probs = torch.sigmoid(logits)
+                outputs = model(data_test) # This line is here. It contains logits OR probs.
+
+                if parameters['output_activation'] == 'none':
+                    probs = torch.sigmoid(outputs) # Convert logits to probs
+                else:
+                    probs = outputs # Is already probs
+                
                 all_raw_probs.append(probs)
 
                 # apply this model's specific thresholds to get final, scaled scores

@@ -3,6 +3,7 @@ import matplotlib.pyplot as plt
 import torch
 import optuna
 import os 
+import random
 
 from . import config
 from .models import GCNModel, GGNNModel 
@@ -74,34 +75,64 @@ def objective(trial, accelerator, parameters, data, sample_splits, all_sample_id
     fold_aurocs = []    # list to store the final score for each fold
     labeled_nodes_set = set(labeled_indices)
 
-    # --- k-fold cross-validation loop ---
-    for fold_idx, (train_sample_indices, val_sample_indices) in enumerate(sample_splits):
-        # get the actual sample ids for this fold's train and validation sets
-        train_samples = all_sample_ids[train_sample_indices]
-        val_samples = all_sample_ids[val_sample_indices]
-        # get the corresponding batch indices for these samples
-        train_batch_indices = [sample_to_batch_idx[sid] for sid in train_samples]
-        val_batch_indices = [sample_to_batch_idx[sid] for sid in val_samples]
-        # create boolean masks to select nodes belonging to the train/val samples
-        train_mask = torch.isin(data.batch, torch.tensor(train_batch_indices, device=data.batch.device))
-        val_mask = torch.isin(data.batch, torch.tensor(val_batch_indices, device=data.batch.device))
-        # get the global indices of the nodes for this fold
-        train_node_indices = torch.where(train_mask)[0]
-        val_node_indices = torch.where(val_mask)[0]
-        # create subgraphs for training and validation for this fold
-        train_data = data.subgraph(train_node_indices)
-        val_data = data.subgraph(val_node_indices)
-        # find the global indices of labeled nodes within this fold's train/val sets
-        train_nodes_global_set = set(train_node_indices.cpu().numpy())
-        val_nodes_global_set = set(val_node_indices.cpu().numpy())
-        train_fold_labeled_global = torch.tensor(sorted(list(train_nodes_global_set.intersection(labeled_nodes_set))), dtype=torch.long)
-        val_fold_labeled_global = torch.tensor(sorted(list(val_nodes_global_set.intersection(labeled_nodes_set))), dtype=torch.long)
-        # map from global node indices to the local indices within the new subgraphs
-        global_to_local_train_map = {global_idx.item(): local_idx for local_idx, global_idx in enumerate(train_node_indices)}
-        global_to_local_val_map = {global_idx.item(): local_idx for local_idx, global_idx in enumerate(val_node_indices)}
-        # get the local indices that will be used as seed nodes for the neighbor loaders
-        local_train_seed_indices = torch.tensor([global_to_local_train_map[global_idx.item()] for global_idx in train_fold_labeled_global], dtype=torch.long)
-        local_val_seed_indices = torch.tensor([global_to_local_val_map[global_idx.item()] for global_idx in val_fold_labeled_global], dtype=torch.long)
+    # Determine the loop structure based on the split mode
+    if trial_config_obj['validation_split_mode'] == 'node_level_random':
+        if trial_config_obj['training_mode'] == 'k-fold':
+            trial.set_user_attr("warning", "node_level_random not compatible with k-fold in HPO. Running a single 80/20 node split.")
+        
+        splits_to_iterate = [('node_level', None, None)]
+        
+    elif trial_config_obj['validation_split_mode'] == 'stratified':
+        splits_to_iterate = [('sample_level', split_data) for split_data in sample_splits]
+    
+    else:
+        raise ValueError(f"Unknown validation_split_mode: {trial_config_obj['validation_split_mode']}")
+
+    for fold_idx, split_info in enumerate(splits_to_iterate):
+        
+        # --- ADD THIS UNPACKING LOGIC ---
+        if split_info[0] == 'sample_level':
+            # --- This is the EXISTING sample-level logic (UNCHANGED, just indented) ---
+            train_sample_indices, val_sample_indices = split_info[1]
+            train_samples = all_sample_ids[train_sample_indices]
+            val_samples = all_sample_ids[val_sample_indices]
+            train_batch_indices = [sample_to_batch_idx[sid] for sid in train_samples]
+            val_batch_indices = [sample_to_batch_idx[sid] for sid in val_samples]
+            train_mask = torch.isin(data.batch, torch.tensor(train_batch_indices, device=data.batch.device))
+            val_mask = torch.isin(data.batch, torch.tensor(val_batch_indices, device=data.batch.device))
+            train_node_indices = torch.where(train_mask)[0]
+            val_node_indices = torch.where(val_mask)[0]
+            train_data = data.subgraph(train_node_indices)
+            val_data = data.subgraph(val_node_indices)
+            train_nodes_global_set = set(train_node_indices.cpu().numpy())
+            val_nodes_global_set = set(val_node_indices.cpu().numpy())
+            train_fold_labeled_global = torch.tensor(sorted(list(train_nodes_global_set.intersection(labeled_nodes_set))), dtype=torch.long)
+            val_fold_labeled_global = torch.tensor(sorted(list(val_nodes_global_set.intersection(labeled_nodes_set))), dtype=torch.long)
+            global_to_local_train_map = {global_idx.item(): local_idx for local_idx, global_idx in enumerate(train_node_indices)}
+            global_to_local_val_map = {global_idx.item(): local_idx for local_idx, global_idx in enumerate(val_node_indices)}
+            local_train_seed_indices = torch.tensor([global_to_local_train_map[global_idx.item()] for global_idx in train_fold_labeled_global], dtype=torch.long)
+            local_val_seed_indices = torch.tensor([global_to_local_val_map[global_idx.item()] for global_idx in val_fold_labeled_global], dtype=torch.long)
+            
+        elif split_info[0] == 'node_level':
+            print("  Using node-level random 80/20 split (TF-style mimic).")
+            # Set seed just like the TF script did, using the `random` module
+            random.seed(trial_config_obj["random_seed"])
+
+            train_node_indices_split = []
+            val_node_indices_split = []
+
+            # Iterate over all labeled indices and split using random.random()
+            for node_idx in labeled_indices:
+                if random.random() > 0.8:
+                    val_node_indices_split.append(node_idx) # Goes to validation
+                else:
+                    train_node_indices_split.append(node_idx) # Goes to train
+
+            train_data = data # Use full graph
+            val_data = data   # Use full graph
+            local_train_seed_indices = torch.tensor(train_node_indices_split, dtype=torch.long)
+            local_val_seed_indices = torch.tensor(val_node_indices_split, dtype=torch.long)
+            # --- END OF BLOCK ---
 
         if len(local_train_seed_indices) == 0 or len(local_val_seed_indices) == 0:
             continue
@@ -117,7 +148,10 @@ def objective(trial, accelerator, parameters, data, sample_splits, all_sample_id
         # learning rate scheduler to reduce the learning rate on validation loss plateau
         scheduler = ReduceLROnPlateau(optimizer, 'min', factor=trial_config_obj['scheduler_factor'], patience=trial_config_obj['scheduler_patience'])
         # loss function
-        criterion = torch.nn.BCEWithLogitsLoss(reduction='sum')
+        if trial_config_obj['output_activation'] == 'none':
+            criterion = torch.nn.BCEWithLogitsLoss(reduction='sum')
+        else:
+            criterion = torch.nn.BCELoss(reduction='sum')
 
         # --- MODIFICATION START: Conditional data loading and training loop ---
         
@@ -207,7 +241,11 @@ def objective(trial, accelerator, parameters, data, sample_splits, all_sample_id
                         batch = batch.to(device)
                         outputs = inference_model(batch)
                         # convert logits to probabilities using sigmoid
-                        all_probs_fold.append(torch.sigmoid(outputs[:batch.batch_size]))
+                        if trial_config_obj['output_activation'] == 'none':
+                            probs = torch.sigmoid(outputs[:batch.batch_size])
+                        else:
+                            probs = outputs[:batch.batch_size] # Already probabilities
+                        all_probs_fold.append(probs)
                         all_true_fold.append(batch.y[:batch.batch_size])
 
                 if not all_probs_fold:
@@ -271,7 +309,11 @@ def objective(trial, accelerator, parameters, data, sample_splits, all_sample_id
                 with torch.no_grad():
                     outputs = inference_model(val_data)
                     # Get probs and true labels ONLY for labeled nodes
-                    all_probs_fold.append(torch.sigmoid(outputs[local_val_seed_indices]))
+                    if trial_config_obj['output_activation'] == 'none':
+                        probs = torch.sigmoid(outputs[local_val_seed_indices])
+                    else:
+                        probs = outputs[local_val_seed_indices] # Already probabilities
+                    all_probs_fold.append(probs)
                     all_true_fold.append(val_data.y[local_val_seed_indices])
 
                 if not all_probs_fold:
@@ -347,31 +389,63 @@ def train_final_model(accelerator, parameters, data, sample_splits, all_sample_i
     subsequent_hop_neighbors = parameters['neighbors_subsequent_hops']
     neighbors_list = [first_hop_neighbors] + [subsequent_hop_neighbors] * (n_layers - 1)
 
-    # --- main loop to iterate through each cross-validation fold ---
-    for fold_idx, (train_sample_indices, val_sample_indices) in enumerate(sample_splits):
+    for fold_idx, split_data in enumerate(sample_splits):
         print(f"\n--- Running Fold {fold_idx + 1}/{len(sample_splits)} ---")
-        # get sample ids and batch indices for this fold
-        train_samples = all_sample_ids[train_sample_indices]
-        val_samples = all_sample_ids[val_sample_indices]
-        train_batch_indices = [sample_to_batch_idx[sid] for sid in train_samples]
-        val_batch_indices = [sample_to_batch_idx[sid] for sid in val_samples]
-        # create node masks and subgraphs for this fold
-        train_mask = torch.isin(data.batch, torch.tensor(train_batch_indices, device=data.batch.device))
-        val_mask = torch.isin(data.batch, torch.tensor(val_batch_indices, device=data.batch.device))
-        train_node_indices = torch.where(train_mask)[0]
-        val_node_indices = torch.where(val_mask)[0]
-        train_data = data.subgraph(train_node_indices)
-        val_data = data.subgraph(val_node_indices)
-        print(f"  Train samples: {len(train_samples)}, Nodes: {train_data.num_nodes} | Val samples: {len(val_samples)}, Nodes: {val_data.num_nodes}")
-        # get local seed indices for the neighbor loaders
-        train_nodes_global_set = set(train_node_indices.cpu().numpy())
-        val_nodes_global_set = set(val_node_indices.cpu().numpy())
-        train_fold_labeled_global = torch.tensor(sorted(list(train_nodes_global_set.intersection(labeled_nodes_set))), dtype=torch.long)
-        val_fold_labeled_global = torch.tensor(sorted(list(val_nodes_global_set.intersection(labeled_nodes_set))), dtype=torch.long)
-        global_to_local_train_map = {global_idx.item(): local_idx for local_idx, global_idx in enumerate(train_node_indices)}
-        global_to_local_val_map = {global_idx.item(): local_idx for local_idx, global_idx in enumerate(val_node_indices)}
-        local_train_seed_indices = torch.tensor([global_to_local_train_map[global_idx.item()] for global_idx in train_fold_labeled_global], dtype=torch.long)
-        local_val_seed_indices = torch.tensor([global_to_local_val_map[global_idx.item()] for global_idx in val_fold_labeled_global], dtype=torch.long)
+        
+        # --- ADD THIS CONDITIONAL LOGIC ---
+        if split_data is None:
+            print("  Using node-level random 80/20 split (TF-style mimic).")
+            
+            # Set seed just like the TF script did, using the `random` module
+            random.seed(parameters["random_seed"])
+
+            train_node_indices = []
+            val_node_indices = []
+            
+            # Iterate over all labeled indices and split using random.random()
+            for node_idx in labeled_indices:
+                if random.random() > 0.8:
+                    val_node_indices.append(node_idx) # Goes to validation
+                else:
+                    train_node_indices.append(node_idx) # Goes to train
+
+            train_data = data # Use full graph
+            val_data = data   # Use full graph
+            
+            local_train_seed_indices = torch.tensor(train_node_indices, dtype=torch.long)
+            local_val_seed_indices = torch.tensor(val_node_indices, dtype=torch.long)
+            
+            val_fold_labeled_global = local_val_seed_indices
+            
+            print(f"  Total Labeled Nodes: {len(labeled_indices)} | Train Nodes: {len(local_train_seed_indices)} | Val Nodes: {len(local_val_seed_indices)}")
+            # --- END OF BLOCK ---
+
+        else:
+            # --- START OF EXISTING SAMPLE-LEVEL SPLIT LOGIC (UNCHANGED, JUST INDENTED) ---
+            print("  Using stratified sample-level 80/20 split.")
+            train_sample_indices, val_sample_indices = split_data
+            # get sample ids and batch indices for this fold
+            train_samples = all_sample_ids[train_sample_indices]
+            val_samples = all_sample_ids[val_sample_indices]
+            train_batch_indices = [sample_to_batch_idx[sid] for sid in train_samples]
+            val_batch_indices = [sample_to_batch_idx[sid] for sid in val_samples]
+            # create node masks and subgraphs for this fold
+            train_mask = torch.isin(data.batch, torch.tensor(train_batch_indices, device=data.batch.device))
+            val_mask = torch.isin(data.batch, torch.tensor(val_batch_indices, device=data.batch.device))
+            train_node_indices = torch.where(train_mask)[0]
+            val_node_indices = torch.where(val_mask)[0]
+            train_data = data.subgraph(train_node_indices)
+            val_data = data.subgraph(val_node_indices)
+            print(f"  Train samples: {len(train_samples)}, Nodes: {train_data.num_nodes} | Val samples: {len(val_samples)}, Nodes: {val_data.num_nodes}")
+            # get local seed indices for the neighbor loaders
+            train_nodes_global_set = set(train_node_indices.cpu().numpy())
+            val_nodes_global_set = set(val_node_indices.cpu().numpy())
+            train_fold_labeled_global = torch.tensor(sorted(list(train_nodes_global_set.intersection(labeled_nodes_set))), dtype=torch.long)
+            val_fold_labeled_global = torch.tensor(sorted(list(val_nodes_global_set.intersection(labeled_nodes_set))), dtype=torch.long)
+            global_to_local_train_map = {global_idx.item(): local_idx for local_idx, global_idx in enumerate(train_node_indices)}
+            global_to_local_val_map = {global_idx.item(): local_idx for local_idx, global_idx in enumerate(val_node_indices)}
+            local_train_seed_indices = torch.tensor([global_to_local_train_map[global_idx.item()] for global_idx in train_fold_labeled_global], dtype=torch.long)
+            local_val_seed_indices = torch.tensor([global_to_local_val_map[global_idx.item()] for global_idx in val_fold_labeled_global], dtype=torch.long)
 
         # initialize model, optimizer, scheduler, and criterion
         if parameters['model_type'] == 'GCNModel':
@@ -381,7 +455,10 @@ def train_final_model(accelerator, parameters, data, sample_splits, all_sample_i
 
         optimizer = optim.Adam(model.parameters(), lr=parameters['learning_rate'], weight_decay=parameters['l2_reg'])
         scheduler = ReduceLROnPlateau(optimizer, 'min', factor=parameters['scheduler_factor'], patience=parameters['scheduler_patience'], verbose=True)
-        criterion = torch.nn.BCEWithLogitsLoss(reduction='sum')
+        if parameters['output_activation'] == 'none':
+            criterion = torch.nn.BCEWithLogitsLoss(reduction='sum')
+        else:
+            criterion = torch.nn.BCELoss(reduction='sum')
 
         # variables for training loop and early stopping
         best_val_loss_for_fold, patience_for_fold, best_epoch_for_fold = float("inf"), 0, 0
@@ -549,12 +626,20 @@ def train_final_model(accelerator, parameters, data, sample_splits, all_sample_i
                     for batch in val_loader: # Use the val_loader defined above
                         batch = batch.to(device)
                         outputs = inference_model(batch)
-                        all_probs_val.append(torch.sigmoid(outputs[:batch.batch_size]))
+                        if parameters['output_activation'] == 'none':
+                            probs = torch.sigmoid(outputs[:batch.batch_size])
+                        else:
+                            probs = outputs[:batch.batch_size]
+                        all_probs_val.append(probs)
                         all_true_val.append(batch.y[:batch.batch_size])
                 elif parameters['training_style'] == 'full_graph':
                     val_data = val_data.to(device) # Ensure val_data is on device
                     outputs = inference_model(val_data)
-                    all_probs_val.append(torch.sigmoid(outputs[local_val_seed_indices]))
+                    if parameters['output_activation'] == 'none':
+                        probs = torch.sigmoid(outputs[local_val_seed_indices])
+                    else:
+                        probs = outputs[local_val_seed_indices]
+                    all_probs_val.append(probs)
                     all_true_val.append(val_data.y[local_val_seed_indices])
             # --- MODIFICATION END ---
             

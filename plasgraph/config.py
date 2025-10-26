@@ -55,6 +55,7 @@ PARAMS = [
     # HPO and Evaluation Parameters
 
     {'name': 'training_mode', 'type': str, 'default': 'k-fold'}, # training mode: 'k-fold' for ensemble or 'single-fold' for a single model
+    {'name': 'validation_split_mode', 'type': str, 'default': 'stratified'}, # 'stratified' (sample-level) or 'node_level_random'
     {'name': 'k_folds', 'type': int, 'default': 5}, # number of folds to use for cross-validation during HPO and final training
     {'name': 'optuna_n_trials', 'type': int, 'default': 50}, # total number of HPO trials to run with Optuna
     {'name': 'training_style', 'type': str, 'default': 'neighbor_sampling'}, # Training style: 'neighbor_sampling' for mini-batches or 'full_graph' for a single pass
