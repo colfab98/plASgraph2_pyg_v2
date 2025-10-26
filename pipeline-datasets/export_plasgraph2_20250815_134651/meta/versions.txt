@@ -1,4 +1,0 @@
-Bundle: export_plasgraph2_20250815_134651
-Created: 2025-08-15T13:46:51+02:00
-Host: sv3000
-minimap2: 2.30-r1287

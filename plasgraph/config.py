@@ -12,7 +12,7 @@ PARAMS = [
     {'name': 'feature_generation_method', 'type': str, 'default': 'emb'}, # method for generating sequence features; can be 'emb' for a Transformer model or 'kmer'
     {'name': 'emb_model_name', 'type': str, 'default': 'zhihan1996/DNABERT-2-117M'}, # specific name of the pre-trained DNABert model to use if 'feature_generation_method' is 'emb'
     {'name': 'num_workers', 'type': int, 'default': 12}, # number of CPU worker processes to use for loading data in parallel
-    {'name': 'assemblies', 'type': str, 'default': 'unicycler'}, 
+    {'name': 'assemblies', 'type': str, 'default': 'unicycler'}, # 'all'
     {'name': 'dataset_type', 'type': str, 'default': 'new'}, # Determines manifest format. Options: 'original', 'new'
 
     # Model Architecture Parameters

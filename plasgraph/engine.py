@@ -119,99 +119,174 @@ def objective(trial, accelerator, parameters, data, sample_splits, all_sample_id
         # loss function
         criterion = torch.nn.BCEWithLogitsLoss(reduction='sum')
 
-        # NeighborLoader for the training set of this fold
-        train_loader = NeighborLoader(
-            train_data,     # the subgraph for this training fold
-            input_nodes=local_train_seed_indices.to(device),    # seed nodes are the labeled nodes
-            num_neighbors=neighbors_list,   # neighborhood sampling sizes per layer
-            shuffle=True,    # shuffle the data at each epoch
-            batch_size=trial_config_obj['batch_size'],    # use the batch size suggested by Optuna
-            num_workers=trial_config_obj['num_workers'],
-            pin_memory=True,     # for faster data transfer to GPU
-        )
-
-        # NeighborLoader for the validation set of this fold
-        val_loader = NeighborLoader(
-            val_data,
-            input_nodes=local_val_seed_indices.to(device),
-            num_neighbors=neighbors_list,
-            shuffle=False,     # no need to shuffle validation data
-            batch_size=trial_config_obj['batch_size'],
-            num_workers=trial_config_obj['num_workers'],
-            pin_memory=True,
-        )
-
+        # --- MODIFICATION START: Conditional data loading and training loop ---
+        
         # initialize variables for early stopping within the fold
         best_val_loss_for_fold = float("inf")
         patience_for_fold = 0
         best_model_state_for_fold = None
+        y_probs_fold = torch.empty(0) # Init empty tensors
+        y_true_fold = torch.empty(0)
+        
+        if trial_config_obj['training_style'] == 'neighbor_sampling':
+            # NeighborLoader for the training set of this fold
+            train_loader = NeighborLoader(
+                train_data,     # the subgraph for this training fold
+                input_nodes=local_train_seed_indices.to(device),    # seed nodes are the labeled nodes
+                num_neighbors=neighbors_list,   # neighborhood sampling sizes per layer
+                shuffle=True,    # shuffle the data at each epoch
+                batch_size=trial_config_obj['batch_size'],    # use the batch size suggested by Optuna
+                num_workers=trial_config_obj['num_workers'],
+                pin_memory=True,     # for faster data transfer to GPU
+            )
 
-        # --- training loop for the number of epochs specified for hpo trials ---
-        for epoch in range(parameters["epochs_trials"]):
-            # set the model to training mode
-            model.train()
-            for batch in train_loader:
-                batch = batch.to(device)                    # move the current mini-batch to the device
-                optimizer.zero_grad()                       # clear gradients from the previous step
-                outputs = model(batch)                      # perform a forward pass on the mini-batch
-                loss = criterion(outputs[:batch.batch_size], batch.y[:batch.batch_size])
-                loss.backward()                             # perform backpropagation to compute gradients
-                fix_gradients(trial_config_obj, model)      # apply gradient clipping/fixing
-                optimizer.step()                            # update the model weights
+            # NeighborLoader for the validation set of this fold
+            val_loader = NeighborLoader(
+                val_data,
+                input_nodes=local_val_seed_indices.to(device),
+                num_neighbors=neighbors_list,
+                shuffle=False,     # no need to shuffle validation data
+                batch_size=trial_config_obj['batch_size'],
+                num_workers=trial_config_obj['num_workers'],
+                pin_memory=True,
+            )
 
-            # --- validation loop ---
-            model.eval()
-            total_val_loss = 0
-            with torch.no_grad():                           # disable gradient computation for validation
-                for batch in val_loader:
-                    batch = batch.to(device)
-                    outputs = model(batch)
-                    val_loss = criterion(outputs[:batch.batch_size], batch.y[:batch.batch_size])
-                    total_val_loss += val_loss.item()
+            # --- training loop for the number of epochs specified for hpo trials ---
+            for epoch in range(parameters["epochs_trials"]):
+                # set the model to training mode
+                model.train()
+                for batch in train_loader:
+                    batch = batch.to(device)                    # move the current mini-batch to the device
+                    optimizer.zero_grad()                       # clear gradients from the previous step
+                    outputs = model(batch)                      # perform a forward pass on the mini-batch
+                    loss = criterion(outputs[:batch.batch_size], batch.y[:batch.batch_size])
+                    loss.backward()                             # perform backpropagation to compute gradients
+                    fix_gradients(trial_config_obj, model)      # apply gradient clipping/fixing
+                    optimizer.step()                            # update the model weights
+
+                # --- validation loop ---
+                model.eval()
+                total_val_loss = 0
+                with torch.no_grad():                           # disable gradient computation for validation
+                    for batch in val_loader:
+                        batch = batch.to(device)
+                        outputs = model(batch)
+                        val_loss = criterion(outputs[:batch.batch_size], batch.y[:batch.batch_size])
+                        total_val_loss += val_loss.item()
+                
+                # --- THIS IS LINE 1 (FIXED) ---
+                avg_val_loss = total_val_loss     # calculate the total validation loss for the epoch
+                scheduler.step(avg_val_loss)    # update learning rate scheduler
+
+                # check for improvement in validation loss for early stopping
+                if avg_val_loss < best_val_loss_for_fold:
+                    best_val_loss_for_fold = avg_val_loss                           # update the best loss
+                    patience_for_fold = 0                                           # reset patience
+                    best_model_state_for_fold = copy.deepcopy(model.state_dict())   # save the best model state
+                else:
+                    patience_for_fold += 1
+                    # if no improvement for a set number of epochs, stop training for this fold
+                    if patience_for_fold >= parameters["early_stopping_patience"]:
+                        break
+                
+            # --- final evaluation for the fold using the best model state ---
+            if best_model_state_for_fold is not None:
+                # create a new model instance for inference
+                if trial_config_obj['model_type'] == 'GCNModel':
+                    inference_model = GCNModel(trial_config_obj).to(device)
+                else:
+                    inference_model = GGNNModel(trial_config_obj).to(device)
+                
+                # load the best model state found during training
+                inference_model.load_state_dict(best_model_state_for_fold)
+                inference_model.eval() 
+
+                all_probs_fold, all_true_fold = [], []
+                with torch.no_grad():
+                    for batch in val_loader:
+                        batch = batch.to(device)
+                        outputs = inference_model(batch)
+                        # convert logits to probabilities using sigmoid
+                        all_probs_fold.append(torch.sigmoid(outputs[:batch.batch_size]))
+                        all_true_fold.append(batch.y[:batch.batch_size])
+
+                if not all_probs_fold:
+                    continue
+                
+                # concatenate results from all validation batches
+                y_probs_fold = torch.cat(all_probs_fold).cpu()
+                y_true_fold = torch.cat(all_true_fold).cpu()
+        
+        elif trial_config_obj['training_style'] == 'full_graph':
+            # --- FULL GRAPH TRAINING ---
             
-            avg_val_loss = total_val_loss / len(val_loader)     # calculate the average validation loss for the epoch
-            scheduler.step(avg_val_loss)    # update learning rate scheduler
+            # Move full subgraphs to device
+            train_data = train_data.to(device)
+            val_data = val_data.to(device)
 
+            # --- training loop for the number of epochs specified for hpo trials ---
+            for epoch in range(parameters["epochs_trials"]):
+                # set the model to training mode
+                model.train()
+                optimizer.zero_grad()
+                outputs = model(train_data) # Full forward pass
+                # Calculate loss ONLY on labeled nodes
+                loss = criterion(outputs[local_train_seed_indices], train_data.y[local_train_seed_indices])
+                loss.backward()
+                fix_gradients(trial_config_obj, model)
+                optimizer.step()
 
-            # check for improvement in validation loss for early stopping
-            if avg_val_loss < best_val_loss_for_fold:
-                best_val_loss_for_fold = avg_val_loss                           # update the best loss
-                patience_for_fold = 0                                           # reset patience
-                best_model_state_for_fold = copy.deepcopy(model.state_dict())   # save the best model state
-            else:
-                patience_for_fold += 1
-                # if no improvement for a set number of epochs, stop training for this fold
-                if patience_for_fold >= parameters["early_stopping_patience"]:
-                    break
+                # --- validation loop ---
+                model.eval()
+                total_val_loss = 0
+                with torch.no_grad():
+                    outputs = model(val_data) # Full forward pass
+                    val_loss = criterion(outputs[local_val_seed_indices], val_data.y[local_val_seed_indices])
+                    total_val_loss = val_loss.item()
+                
+                avg_val_loss = total_val_loss # Not an average, just the total loss for the epoch
+                scheduler.step(avg_val_loss)
+
+                # check for improvement in validation loss for early stopping
+                if avg_val_loss < best_val_loss_for_fold:
+                    best_val_loss_for_fold = avg_val_loss
+                    patience_for_fold = 0
+                    best_model_state_for_fold = copy.deepcopy(model.state_dict())
+                else:
+                    patience_for_fold += 1
+                    if patience_for_fold >= parameters["early_stopping_patience"]:
+                        break
+
+            # --- final evaluation for the fold using the best model state ---
+            if best_model_state_for_fold is not None:
+                if trial_config_obj['model_type'] == 'GCNModel':
+                    inference_model = GCNModel(trial_config_obj).to(device)
+                else:
+                    inference_model = GGNNModel(trial_config_obj).to(device)
+                
+                inference_model.load_state_dict(best_model_state_for_fold)
+                inference_model.eval() 
+
+                all_probs_fold, all_true_fold = [], []
+                with torch.no_grad():
+                    outputs = inference_model(val_data)
+                    # Get probs and true labels ONLY for labeled nodes
+                    all_probs_fold.append(torch.sigmoid(outputs[local_val_seed_indices]))
+                    all_true_fold.append(val_data.y[local_val_seed_indices])
+
+                if not all_probs_fold:
+                    continue
+
+                y_probs_fold = torch.cat(all_probs_fold).cpu()
+                y_true_fold = torch.cat(all_true_fold).cpu()
+        
+        else:
+            raise ValueError(f"Unknown training_style: {trial_config_obj['training_style']}")
+
+        # --- MODIFICATION END ---
             
-        # --- final evaluation for the fold using the best model state ---
-        if best_model_state_for_fold is not None:
-            # create a new model instance for inference
-            if trial_config_obj['model_type'] == 'GCNModel':
-                inference_model = GCNModel(trial_config_obj).to(device)
-            else:
-                inference_model = GGNNModel(trial_config_obj).to(device)
-            
-            # load the best model state found during training
-            inference_model.load_state_dict(best_model_state_for_fold)
-            inference_model.eval() 
-
-            all_probs_fold, all_true_fold = [], []
-            with torch.no_grad():
-                for batch in val_loader:
-                    batch = batch.to(device)
-                    outputs = inference_model(batch)
-                    # convert logits to probabilities using sigmoid
-                    all_probs_fold.append(torch.sigmoid(outputs[:batch.batch_size]))
-                    all_true_fold.append(batch.y[:batch.batch_size])
-
-            if not all_probs_fold:
-                continue
-            
-            # concatenate results from all validation batches
-            y_probs_fold = torch.cat(all_probs_fold).cpu()
-            y_true_fold = torch.cat(all_true_fold).cpu()
-
+        # --- This part (AUROC calculation) stays outside the if/else ---
+        if best_model_state_for_fold is not None and y_probs_fold.numel() > 0:
             # --- calculate auroc robustly, defaulting to 0.5 if a class is missing ---
             auroc_p, auroc_c = 0.5, 0.5  
             # plasmid AUROC
@@ -235,7 +310,7 @@ def objective(trial, accelerator, parameters, data, sample_splits, all_sample_id
                 raise optuna.exceptions.TrialPruned()
 
     # final objective value is the mean auroc across all folds
-    final_objective_value = np.mean(fold_aurocs)
+    final_objective_value = np.mean(fold_aurocs) if fold_aurocs else 0.0
     return final_objective_value
 
 
@@ -308,18 +383,17 @@ def train_final_model(accelerator, parameters, data, sample_splits, all_sample_i
         scheduler = ReduceLROnPlateau(optimizer, 'min', factor=parameters['scheduler_factor'], patience=parameters['scheduler_patience'], verbose=True)
         criterion = torch.nn.BCEWithLogitsLoss(reduction='sum')
 
+        # variables for training loop and early stopping
+        best_val_loss_for_fold, patience_for_fold, best_epoch_for_fold = float("inf"), 0, 0
+        best_model_state_for_fold = None
+        train_losses_fold, val_losses_fold = [], []
+        plot_frequency = max(1, parameters["epochs"] // 10)
+        
         num_workers = parameters['num_workers']
-        # setup data loaders for this fold
-        train_loader = NeighborLoader(
-            train_data,
-            input_nodes=local_train_seed_indices.to(device),
-            num_neighbors=neighbors_list,
-            shuffle=True,
-            batch_size=parameters['batch_size'],
-            num_workers=num_workers,
-            pin_memory=True,
-        )
 
+        # --- MODIFICATION START: Conditional data loading and training loop ---
+        
+        # We need val_loader for threshold setting later, regardless of training style
         val_loader = NeighborLoader(
             val_data,
             input_nodes=local_val_seed_indices.to(device),
@@ -330,61 +404,123 @@ def train_final_model(accelerator, parameters, data, sample_splits, all_sample_i
             pin_memory=True,
         )
 
-        # variables for training loop and early stopping
-        best_val_loss_for_fold, patience_for_fold, best_epoch_for_fold = float("inf"), 0, 0
-        best_model_state_for_fold = None
-        train_losses_fold, val_losses_fold = [], []
-        plot_frequency = max(1, parameters["epochs"] // 10)
+        if parameters['training_style'] == 'neighbor_sampling':
+            # setup data loaders for this fold
+            train_loader = NeighborLoader(
+                train_data,
+                input_nodes=local_train_seed_indices.to(device),
+                num_neighbors=neighbors_list,
+                shuffle=True,
+                batch_size=parameters['batch_size'],
+                num_workers=num_workers,
+                pin_memory=True,
+            )
 
-        # --- main training loop ---
-        for epoch in range(parameters["epochs"]):
-            model.train()
-            total_train_loss = 0
-            for batch in train_loader:
-                batch = batch.to(device)
+            # --- main training loop (NEIGHBOR SAMPLING) ---
+            for epoch in range(parameters["epochs"]):
+                model.train()
+                total_train_loss = 0
+                for batch in train_loader:
+                    batch = batch.to(device)
+                    optimizer.zero_grad()
+                    outputs = model(batch)
+                    loss = criterion(outputs[:batch.batch_size], batch.y[:batch.batch_size])
+                    loss.backward()
+                    utils.fix_gradients(parameters, model)
+                    optimizer.step()
+                    total_train_loss += loss.item()
+                
+                # --- THIS IS LINE 2 (FIXED) ---
+                avg_train_loss = total_train_loss
+                train_losses_fold.append(avg_train_loss)
+
+                # plot gradient magnitudes periodically for the first fold to diagnose training
+                if fold_idx == 0: 
+                    utils.plot_gradient_magnitudes(utils.get_gradient_magnitudes(model), epoch + 1, cv_plots_dir, plot_frequency=plot_frequency)
+                
+                model.eval()
+                total_val_loss = 0
+                with torch.no_grad():
+                    for batch in val_loader:
+                        batch = batch.to(device)
+                        outputs = model(batch)
+                        val_loss = criterion(outputs[:batch.batch_size], batch.y[:batch.batch_size])
+                        total_val_loss += val_loss.item()
+                
+                # --- THIS IS LINE 3 (FIXED) ---
+                avg_val_loss = total_val_loss
+                val_losses_fold.append(avg_val_loss)
+                scheduler.step(avg_val_loss)
+
+                # logging progress
+                if (epoch + 1) % 10 == 0 or (epoch + 1) == parameters["epochs"]:
+                    print(f"Epoch {epoch + 1}/{parameters['epochs']} | Train Loss: {avg_train_loss:.4f} | Val Loss: {avg_val_loss:.4f}")
+
+                # early stopping logic
+                if avg_val_loss < best_val_loss_for_fold:
+                    best_val_loss_for_fold = avg_val_loss
+                    best_epoch_for_fold = epoch + 1
+                    patience_for_fold = 0
+                    best_model_state_for_fold = copy.deepcopy(model.state_dict())
+                else:
+                    patience_for_fold += 1
+                    if patience_for_fold >= parameters["early_stopping_patience_retrain"]:
+                        print(f"Early stopping triggered at epoch {epoch + 1}")
+                        break
+        
+        elif parameters['training_style'] == 'full_graph':
+            # --- MAIN TRAINING LOOP (FULL GRAPH) ---
+            
+            # Move full subgraphs to device
+            train_data = train_data.to(device)
+            val_data = val_data.to(device)
+            
+            for epoch in range(parameters["epochs"]):
+                model.train()
                 optimizer.zero_grad()
-                outputs = model(batch)
-                loss = criterion(outputs[:batch.batch_size], batch.y[:batch.batch_size])
+                outputs = model(train_data)
+                loss = criterion(outputs[local_train_seed_indices], train_data.y[local_train_seed_indices])
                 loss.backward()
                 utils.fix_gradients(parameters, model)
                 optimizer.step()
-                total_train_loss += loss.item()
-            
-            avg_train_loss = total_train_loss / len(train_loader) if len(train_loader) > 0 else 0
-            train_losses_fold.append(avg_train_loss)
+                
+                avg_train_loss = loss.item() # This is the total loss, not avg per node
+                train_losses_fold.append(avg_train_loss)
 
-            # plot gradient magnitudes periodically for the first fold to diagnose training
-            if fold_idx == 0: 
-                utils.plot_gradient_magnitudes(utils.get_gradient_magnitudes(model), epoch + 1, cv_plots_dir, plot_frequency=plot_frequency)
-            
-            model.eval()
-            total_val_loss = 0
-            with torch.no_grad():
-                for batch in val_loader:
-                    batch = batch.to(device)
-                    outputs = model(batch)
-                    val_loss = criterion(outputs[:batch.batch_size], batch.y[:batch.batch_size])
-                    total_val_loss += val_loss.item()
-            
-            avg_val_loss = total_val_loss / len(val_loader) if len(val_loader) > 0 else 0
-            val_losses_fold.append(avg_val_loss)
-            scheduler.step(avg_val_loss)
+                # plot gradient magnitudes periodically
+                if fold_idx == 0: 
+                    utils.plot_gradient_magnitudes(utils.get_gradient_magnitudes(model), epoch + 1, cv_plots_dir, plot_frequency=plot_frequency)
+                
+                model.eval()
+                total_val_loss = 0
+                with torch.no_grad():
+                    outputs = model(val_data)
+                    val_loss = criterion(outputs[local_val_seed_indices], val_data.y[local_val_seed_indices])
+                    total_val_loss = val_loss.item()
 
-            # logging progress
-            if (epoch + 1) % 10 == 0 or (epoch + 1) == parameters["epochs"]:
-                print(f"Epoch {epoch + 1}/{parameters['epochs']} | Train Loss: {avg_train_loss:.4f} | Val Loss: {avg_val_loss:.4f}")
+                avg_val_loss = total_val_loss # This is the total loss
+                val_losses_fold.append(avg_val_loss)
+                scheduler.step(avg_val_loss)
 
-            # early stopping logic
-            if avg_val_loss < best_val_loss_for_fold:
-                best_val_loss_for_fold = avg_val_loss
-                best_epoch_for_fold = epoch + 1
-                patience_for_fold = 0
-                best_model_state_for_fold = copy.deepcopy(model.state_dict())
-            else:
-                patience_for_fold += 1
-                if patience_for_fold >= parameters["early_stopping_patience_retrain"]:
-                    print(f"Early stopping triggered at epoch {epoch + 1}")
-                    break
+                # logging progress
+                if (epoch + 1) % 10 == 0 or (epoch + 1) == parameters["epochs"]:
+                    print(f"Epoch {epoch + 1}/{parameters['epochs']} | Train Loss: {avg_train_loss:.4f} | Val Loss: {avg_val_loss:.4f}")
+
+                # early stopping logic
+                if avg_val_loss < best_val_loss_for_fold:
+                    best_val_loss_for_fold = avg_val_loss
+                    best_epoch_for_fold = epoch + 1
+                    patience_for_fold = 0
+                    best_model_state_for_fold = copy.deepcopy(model.state_dict())
+                else:
+                    patience_for_fold += 1
+                    if patience_for_fold >= parameters["early_stopping_patience_retrain"]:
+                        print(f"Early stopping triggered at epoch {epoch + 1}")
+                        break
+        else:
+            raise ValueError(f"Unknown training_style: {parameters['training_style']}")
+        
+        # --- MODIFICATION END ---
         
         print(f"Fold {fold_idx + 1} finished. Best epoch: {best_epoch_for_fold} with val loss: {best_val_loss_for_fold:.4f}")
 
@@ -406,13 +542,22 @@ def train_final_model(accelerator, parameters, data, sample_splits, all_sample_i
             inference_model.load_state_dict(best_model_state_for_fold)
             inference_model.eval()
 
+            # --- MODIFICATION START: Conditional validation data gathering ---
             all_probs_val, all_true_val = [], []
             with torch.no_grad():
-                for batch in val_loader:
-                    batch = batch.to(device)
-                    outputs = inference_model(batch)
-                    all_probs_val.append(torch.sigmoid(outputs[:batch.batch_size]))
-                    all_true_val.append(batch.y[:batch.batch_size])
+                if parameters['training_style'] == 'neighbor_sampling':
+                    for batch in val_loader: # Use the val_loader defined above
+                        batch = batch.to(device)
+                        outputs = inference_model(batch)
+                        all_probs_val.append(torch.sigmoid(outputs[:batch.batch_size]))
+                        all_true_val.append(batch.y[:batch.batch_size])
+                elif parameters['training_style'] == 'full_graph':
+                    val_data = val_data.to(device) # Ensure val_data is on device
+                    outputs = inference_model(val_data)
+                    all_probs_val.append(torch.sigmoid(outputs[local_val_seed_indices]))
+                    all_true_val.append(val_data.y[local_val_seed_indices])
+            # --- MODIFICATION END ---
+            
             y_probs_val_fold = torch.cat(all_probs_val).cpu()
             y_true_val_fold = torch.cat(all_true_val).cpu()
 
@@ -523,3 +668,4 @@ def classify_graph(model, parameters, graph_file, file_prefix, sample_id):
         columns=["sample", "contig", "length", "plasmid_score", "chrom_score", "label"]
     )
     return prediction_df
+
