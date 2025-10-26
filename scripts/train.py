@@ -145,7 +145,7 @@ def main():
             skf = StratifiedKFold(n_splits=parameters["k_folds"], shuffle=True, random_state=parameters["random_seed"])
             # Create splits based on the indices of the sample IDs array, stratified by y
             splits = list(skf.split(all_sample_ids, stratification_y))
-        else: # single-fold
+        else: # single_fold
             print("✅ Setting up stratified single-fold training with an 80/20 train/validation split.")
             # Create a single 80/20 stratified split of sample IDs
             train_s_idx, val_s_idx = train_test_split(

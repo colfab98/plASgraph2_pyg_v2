@@ -508,7 +508,7 @@ def train_final_model(accelerator, parameters, data, sample_splits, all_sample_i
                     total_train_loss += loss.item()
                 
                 # --- THIS IS LINE 2 (FIXED) ---
-                avg_train_loss = total_train_loss
+                avg_train_loss = total_train_loss / len(local_train_seed_indices)
                 train_losses_fold.append(avg_train_loss)
 
                 # plot gradient magnitudes periodically for the first fold to diagnose training
@@ -525,7 +525,7 @@ def train_final_model(accelerator, parameters, data, sample_splits, all_sample_i
                         total_val_loss += val_loss.item()
                 
                 # --- THIS IS LINE 3 (FIXED) ---
-                avg_val_loss = total_val_loss
+                avg_val_loss = total_val_loss / len(local_val_seed_indices)
                 val_losses_fold.append(avg_val_loss)
                 scheduler.step(avg_val_loss)
 
@@ -561,7 +561,7 @@ def train_final_model(accelerator, parameters, data, sample_splits, all_sample_i
                 utils.fix_gradients(parameters, model)
                 optimizer.step()
                 
-                avg_train_loss = loss.item() # This is the total loss, not avg per node
+                avg_train_loss = loss.item() / len(local_train_seed_indices) # This is now avg loss
                 train_losses_fold.append(avg_train_loss)
 
                 # plot gradient magnitudes periodically
@@ -575,7 +575,7 @@ def train_final_model(accelerator, parameters, data, sample_splits, all_sample_i
                     val_loss = criterion(outputs[local_val_seed_indices], val_data.y[local_val_seed_indices])
                     total_val_loss = val_loss.item()
 
-                avg_val_loss = total_val_loss # This is the total loss
+                avg_val_loss = total_val_loss / len(local_val_seed_indices) # This is now avg loss
                 val_losses_fold.append(avg_val_loss)
                 scheduler.step(avg_val_loss)
 
@@ -608,7 +608,7 @@ def train_final_model(accelerator, parameters, data, sample_splits, all_sample_i
             torch.save(best_model_state_for_fold, model_save_path)
             print(f"  > Saved best model for fold {fold_idx + 1} to: {model_save_path}")
             # plot and save the training and validation loss history for this fold
-            plt.figure(figsize=(10, 6)); plt.plot(train_losses_fold, label='Train Loss'); plt.plot(val_losses_fold, label='Validation Loss'); plt.axvline(x=best_epoch_for_fold - 1, color='r', linestyle='--', label=f'Best Epoch ({best_epoch_for_fold})'); plt.title(f'Fold {fold_idx + 1} Training History'); plt.xlabel('Epoch'); plt.ylabel('Loss'); plt.legend(); plt.grid(True); plot_path = os.path.join(cv_plots_dir, f"cv_loss_fold_{fold_idx + 1}.png"); plt.savefig(plot_path); plt.close()
+            plt.figure(figsize=(10, 6)); plt.ylim(0.4, 1.0); plt.plot(train_losses_fold, label='Train Loss'); plt.plot(val_losses_fold, label='Validation Loss'); plt.axvline(x=best_epoch_for_fold - 1, color='r', linestyle='--', label=f'Best Epoch ({best_epoch_for_fold})'); plt.title(f'Fold {fold_idx + 1} Training History'); plt.xlabel('Epoch'); plt.ylabel('Average Loss'); plt.legend(); plt.grid(True); plot_path = os.path.join(cv_plots_dir, f"cv_loss_fold_{fold_idx + 1}.png"); plt.savefig(plot_path); plt.close()
             print(f"  > Saved loss plot to: {plot_path}")
 
             # --- determine and save optimal classification thresholds on the validation set ---

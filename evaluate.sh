@@ -9,7 +9,7 @@
 
 export TOKENIZERS_PARALLELISM=false
 
-export RUN_NAME="run_1"
+export RUN_NAME="run_3"
 
 mkdir -p runs/${RUN_NAME}/evaluation_results
 
