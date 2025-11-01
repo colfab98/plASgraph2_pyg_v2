@@ -3,11 +3,12 @@
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1  
 #SBATCH --gpus-per-task=1    
+#SBATCH --cpus-per-task=1
 #SBATCH --time=02:00:00
 #SBATCH --output=slurm_logs/%x-%j.out
 #SBATCH --error=slurm_logs/%x-%j.err
 
-export RUN_NAME="run_3" 
+export RUN_NAME="multigpu_finaltraining_5" 
 
 mkdir -p runs/${RUN_NAME}
 mkdir -p runs/${RUN_NAME}/final_model

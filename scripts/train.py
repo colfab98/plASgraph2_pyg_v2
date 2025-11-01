@@ -9,6 +9,12 @@ import torch
 from sklearn.model_selection import StratifiedKFold, train_test_split
 import pandas as pd
 
+import subprocess
+import time
+
+import matplotlib
+matplotlib.use('Agg')
+import matplotlib.pyplot as plt
 
 # Import modules from our library
 from plasgraph.data import Dataset_Pytorch
@@ -19,8 +25,86 @@ from plasgraph.utils import set_all_seeds
 from contextlib import contextmanager
 from accelerate import Accelerator
 
+def plot_gpu_utilization(csv_file, output_png):
+    """Reads the nvidia-smi CSV log and saves a utilization plot."""
+    try:
+        # Read the CSV, skipping the header row
+        df = pd.read_csv(csv_file, header=0)
+        
+        # Clean up column names (remove spaces)
+        df.columns = df.columns.str.strip()
+        
+        # --- Clean the data ---
+        # Convert timestamp to datetime objects
+        df['timestamp'] = pd.to_datetime(df['timestamp'])
+        
+        # Remove ' %' and convert to integer
+        df['utilization.gpu [%]'] = df['utilization.gpu [%]'].str.replace(' %', '').astype(int)
+        
+        # --- Create 'Elapsed Time' ---
+        # Get the first timestamp
+        start_time = df['timestamp'].iloc[0]
+        # Calculate time in seconds from the start
+        df['Elapsed Time (s)'] = (df['timestamp'] - start_time).dt.total_seconds()
 
+        # --- Generate Plot ---
+        plt.figure(figsize=(12, 6))
+        plt.plot(df['Elapsed Time (s)'], df['utilization.gpu [%]'], label='GPU Utilization')
+        
+        # Filtered data for average calculation (ignoring 0%)
+        active_util = df[df['utilization.gpu [%]'] > 0]['utilization.gpu [%]']
+        avg_util = active_util.mean() if not active_util.empty else 0
+        
+        # Add average line to the plot
+        plt.axhline(y=avg_util, color='r', linestyle='--', label=f'Avg. (when >0%): {avg_util:.2f}%')
+        
+        plt.title(f'GPU Utilization Over Time\n(File: {os.path.basename(csv_file)})')
+        plt.xlabel('Elapsed Time (seconds)')
+        plt.ylabel('GPU Utilization (%)')
+        plt.legend()
+        plt.grid(True)
+        plt.ylim(0, 105) # Set Y-axis from 0 to 105%
+        
+        # Save the figure
+        plt.savefig(output_png, dpi=150)
+        plt.close() # Close the figure to free memory
+        
+        print(f"    > Plot saved to: {output_png}")
 
+    except Exception as e:
+        print(f"    > FAILED to generate plot: {e}")
+
+@contextmanager
+def log_gpu_utilization(output_file, accelerator):
+    """
+    A context manager to run nvidia-smi in the background
+    and log utilization to a file.
+    """
+    process = None
+    if accelerator.is_main_process:
+        accelerator.print(f"Starting nvidia-smi logging to: {output_file}")
+        # Start nvidia-smi in the background
+        cmd = f"nvidia-smi --query-gpu=timestamp,utilization.gpu,memory.used --format=csv -l 1 > {output_file}"
+        # Using shell=True to handle the file redirection '>'
+        process = subprocess.Popen(cmd, shell=True)
+        time.sleep(2) # Give it a second to start
+    
+    try:
+        # This 'yield' runs the code inside the 'with' block
+        yield
+    finally:
+        # This code runs after the 'with' block exits
+        if process and accelerator.is_main_process:
+            accelerator.print(f"Stopping nvidia-smi (PID: {process.pid})...")
+            # Stop the background process
+            process.terminate()
+            # Wait for it to fully stop
+            process.wait()
+            
+            # --- 3. ADD PLOTTING CALL ---
+            # Now that the CSV is closed, generate the plot
+            plot_png = os.path.splitext(output_file)[0] + ".png"
+            plot_gpu_utilization(output_file, plot_png)
 
 
 def main():
@@ -72,6 +156,9 @@ def main():
         shutil.rmtree(log_dir)
     os.makedirs(log_dir, exist_ok=True)
 
+    gpu_metrics_dir = os.path.join(model_output_dir, "gpu_metrics")
+    os.makedirs(gpu_metrics_dir, exist_ok=True)
+
     accelerator = Accelerator()
 
     if accelerator.is_main_process:
@@ -80,16 +167,16 @@ def main():
         print(f"Dataset: {os.path.basename(args.train_file_list)}")
         print("----------------------------------------")
 
-
-    # load and process the training data
-    accelerator.print("✅ Loading data...")
-    all_graphs = Dataset_Pytorch(
-        root=data_cache_dir,
-        file_prefix=args.file_prefix,
-        train_file_list=args.train_file_list,
-        parameters=parameters,
-        accelerator=accelerator 
-    )
+    data_util_log = os.path.join(gpu_metrics_dir, "gpu_util_data_processing.csv")
+    
+    with log_gpu_utilization(data_util_log, accelerator):
+        all_graphs = Dataset_Pytorch(
+            root=data_cache_dir,
+            file_prefix=args.file_prefix,
+            train_file_list=args.train_file_list,
+            parameters=parameters,
+            accelerator=accelerator 
+        )
 
     # extract the graph data object, the NetworkX graph, and the node list
     data = all_graphs[0]
@@ -172,10 +259,15 @@ def main():
         raise ValueError(f"Unknown validation_split_mode: {parameters['validation_split_mode']}")
 
 
-    # train the K-fold ensemble
-    train_final_model(
-        accelerator, parameters, data, splits, all_sample_ids, labeled_indices, log_dir, G, node_list
-    )
+    train_util_log = os.path.join(gpu_metrics_dir, "gpu_util_training.csv")
+    
+    accelerator.print("\n--- 🚀 Starting Final Model Training ---")
+    with log_gpu_utilization(train_util_log, accelerator):
+        train_final_model(
+            accelerator, parameters, data, splits, all_sample_ids, labeled_indices, log_dir, G, node_list
+        )
+    accelerator.print("--- ✅ Finished Final Model Training ---")
+
 
     # save the final base configuration file for future predictions
     base_params_path = os.path.join(model_output_dir, "base_model_config.yaml")

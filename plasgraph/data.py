@@ -4,6 +4,7 @@ import math
 import re
 import subprocess
 import os
+import time
 
 from accelerate import Accelerator
 import networkx as nx
@@ -310,6 +311,11 @@ class Dataset_Pytorch(InMemoryDataset):
             # extract all dna sequences from the graph nodes for feature generation
             all_sequences = [self.G.nodes[node_id].get("sequence", "") for node_id in self.node_list]
 
+        if torch.cuda.is_available():
+            torch.cuda.reset_peak_memory_stats(self.accelerator.device)
+
+        start_time_emb = time.perf_counter()
+
 
         # --- generate sequence features (transformer embeddings) ---
         if self.parameters['feature_generation_method'] == 'emb':
@@ -350,9 +356,32 @@ class Dataset_Pytorch(InMemoryDataset):
         else:
             raise ValueError(f"Unknown feature_generation_method: {self.parameters['feature_generation_method']}")
 
+        end_time_emb = time.perf_counter()
+
+        local_peak_mem_bytes = 0
+        if torch.cuda.is_available():
+            local_peak_mem_bytes = torch.cuda.max_memory_allocated(self.accelerator.device)
+        
+        # Create a tensor on the device for reduction
+        local_peak_mem_tensor = torch.tensor(local_peak_mem_bytes, device=self.accelerator.device, dtype=torch.float)
+        
+        # Reduce across all processes to find the maximum peak
+        global_peak_mem_tensor = self.accelerator.reduce(local_peak_mem_tensor, reduction='max')
+
 
         # --- final data assembly on the main process ---
         if self.accelerator.is_main_process:
+            elapsed_seconds = end_time_emb - start_time_emb
+            
+            # --- THIS PART IS NEW ---
+            peak_mem_gb = global_peak_mem_tensor.item() / (1024**3)
+            self.accelerator.print("\n" + "="*60)
+            self.accelerator.print(f"⏱️ [PERF] DNABERT embedding (data-parallel):")
+            self.accelerator.print(f"  > Total Time: {elapsed_seconds:.2f} seconds")
+            self.accelerator.print(f"  > Max Peak VRAM: {peak_mem_gb:.2f} GB")
+            self.accelerator.print("="*60)
+            # --- END OF NEW PART ---
+            
             node_to_idx = {node_id: i for i, node_id in enumerate(self.node_list)}
             edge_list = list(self.G.edges())
 

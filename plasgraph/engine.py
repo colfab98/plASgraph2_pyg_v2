@@ -4,6 +4,7 @@ import torch
 import optuna
 import os 
 import random
+import time
 
 from . import config
 from .models import GCNModel, GGNNModel 
@@ -360,23 +361,34 @@ def objective(trial, accelerator, parameters, data, sample_splits, all_sample_id
 
 def train_final_model(accelerator, parameters, data, sample_splits, all_sample_ids, labeled_indices, log_dir, G, node_list):
     """
-    trains k-fold models on a single gpu and saves each one for ensembling
+    Trains k-fold models in parallel across available processes (e.g., multiple GPUs)
+    and saves each model for ensembling.
     """
-    print("\n" + "="*60)
-    print("💾 Training K-Fold Ensemble Models (Single-GPU)")
-    print("="*60)
+    start_time_kfold = time.perf_counter()
+
+    if torch.cuda.is_available():
+        torch.cuda.reset_peak_memory_stats(accelerator.device)
+
+    accelerator.print("\n" + "="*60)
+    accelerator.print("💾 Training K-Fold Ensemble Models (Parallel / Distributed)")
+    accelerator.print("="*60)
 
     device = accelerator.device
     data = data.to(device)
 
     # create a directory to store the trained model files for the ensemble
     ensemble_models_dir = os.path.join(log_dir, "ensemble_models")
-    os.makedirs(ensemble_models_dir, exist_ok=True)
-    print(f"Ensemble models will be saved to: {ensemble_models_dir}")
-
     # create a directory to store plots of the training history for each cross-validation fold
     cv_plots_dir = os.path.join(log_dir, "cv_fold_plots")
-    os.makedirs(cv_plots_dir, exist_ok=True)
+
+    if accelerator.is_main_process:
+        os.makedirs(ensemble_models_dir, exist_ok=True)
+        accelerator.print(f"Ensemble models will be saved to: {ensemble_models_dir}")
+        os.makedirs(cv_plots_dir, exist_ok=True)
+    
+    # All processes wait here to ensure directories are created
+    # before they try to save files.
+    accelerator.wait_for_everyone()
 
     # setup for data splitting (same logic as in `objective` function)
     unique_samples_from_graph = sorted(list(set(node_id.split(':')[0] for node_id in node_list)))
@@ -390,11 +402,18 @@ def train_final_model(accelerator, parameters, data, sample_splits, all_sample_i
     neighbors_list = [first_hop_neighbors] + [subsequent_hop_neighbors] * (n_layers - 1)
 
     for fold_idx, split_data in enumerate(sample_splits):
-        print(f"\n--- Running Fold {fold_idx + 1}/{len(sample_splits)} ---")
+        # --- ADD THIS BLOCK ---
+        # Assign this fold to a specific process.
+        # This makes each process take a different subset of folds.
+        if fold_idx % accelerator.num_processes != accelerator.process_index:
+            continue
+        # --- END OF ADDED BLOCK ---
+        
+        accelerator.print(f"\n--- Running Fold {fold_idx + 1}/{len(sample_splits)} ---")
         
         # --- ADD THIS CONDITIONAL LOGIC ---
         if split_data is None:
-            print("  Using node-level random 80/20 split (TF-style mimic).")
+            accelerator.print("  Using node-level random 80/20 split (TF-style mimic).")
             
             # Set seed just like the TF script did, using the `random` module
             random.seed(parameters["random_seed"])
@@ -417,12 +436,12 @@ def train_final_model(accelerator, parameters, data, sample_splits, all_sample_i
             
             val_fold_labeled_global = local_val_seed_indices
             
-            print(f"  Total Labeled Nodes: {len(labeled_indices)} | Train Nodes: {len(local_train_seed_indices)} | Val Nodes: {len(local_val_seed_indices)}")
+            accelerator.print(f"  Total Labeled Nodes: {len(labeled_indices)} | Train Nodes: {len(local_train_seed_indices)} | Val Nodes: {len(local_val_seed_indices)}")
             # --- END OF BLOCK ---
 
         else:
             # --- START OF EXISTING SAMPLE-LEVEL SPLIT LOGIC (UNCHANGED, JUST INDENTED) ---
-            print("  Using stratified sample-level 80/20 split.")
+            accelerator.print("  Using stratified sample-level 80/20 split.")
             train_sample_indices, val_sample_indices = split_data
             # get sample ids and batch indices for this fold
             train_samples = all_sample_ids[train_sample_indices]
@@ -436,7 +455,7 @@ def train_final_model(accelerator, parameters, data, sample_splits, all_sample_i
             val_node_indices = torch.where(val_mask)[0]
             train_data = data.subgraph(train_node_indices)
             val_data = data.subgraph(val_node_indices)
-            print(f"  Train samples: {len(train_samples)}, Nodes: {train_data.num_nodes} | Val samples: {len(val_samples)}, Nodes: {val_data.num_nodes}")
+            accelerator.print(f"  Train samples: {len(train_samples)}, Nodes: {train_data.num_nodes} | Val samples: {len(val_samples)}, Nodes: {val_data.num_nodes}")
             # get local seed indices for the neighbor loaders
             train_nodes_global_set = set(train_node_indices.cpu().numpy())
             val_nodes_global_set = set(val_node_indices.cpu().numpy())
@@ -508,7 +527,7 @@ def train_final_model(accelerator, parameters, data, sample_splits, all_sample_i
                     total_train_loss += loss.item()
                 
                 # --- THIS IS LINE 2 (FIXED) ---
-                avg_train_loss = total_train_loss / len(local_train_seed_indices)
+                avg_train_loss = total_train_loss
                 train_losses_fold.append(avg_train_loss)
 
                 # plot gradient magnitudes periodically for the first fold to diagnose training
@@ -525,13 +544,13 @@ def train_final_model(accelerator, parameters, data, sample_splits, all_sample_i
                         total_val_loss += val_loss.item()
                 
                 # --- THIS IS LINE 3 (FIXED) ---
-                avg_val_loss = total_val_loss / len(local_val_seed_indices)
+                avg_val_loss = total_val_loss
                 val_losses_fold.append(avg_val_loss)
                 scheduler.step(avg_val_loss)
 
                 # logging progress
                 if (epoch + 1) % 10 == 0 or (epoch + 1) == parameters["epochs"]:
-                    print(f"Epoch {epoch + 1}/{parameters['epochs']} | Train Loss: {avg_train_loss:.4f} | Val Loss: {avg_val_loss:.4f}")
+                    accelerator.print(f"Epoch {epoch + 1}/{parameters['epochs']} | Train Loss: {avg_train_loss:.4f} | Val Loss: {avg_val_loss:.4f}")
 
                 # early stopping logic
                 if avg_val_loss < best_val_loss_for_fold:
@@ -542,7 +561,7 @@ def train_final_model(accelerator, parameters, data, sample_splits, all_sample_i
                 else:
                     patience_for_fold += 1
                     if patience_for_fold >= parameters["early_stopping_patience_retrain"]:
-                        print(f"Early stopping triggered at epoch {epoch + 1}")
+                        accelerator.print(f"Early stopping triggered at epoch {epoch + 1}")
                         break
         
         elif parameters['training_style'] == 'full_graph':
@@ -561,7 +580,7 @@ def train_final_model(accelerator, parameters, data, sample_splits, all_sample_i
                 utils.fix_gradients(parameters, model)
                 optimizer.step()
                 
-                avg_train_loss = loss.item() / len(local_train_seed_indices) # This is now avg loss
+                avg_train_loss = loss.item() # This is the total loss, not avg per node
                 train_losses_fold.append(avg_train_loss)
 
                 # plot gradient magnitudes periodically
@@ -575,13 +594,13 @@ def train_final_model(accelerator, parameters, data, sample_splits, all_sample_i
                     val_loss = criterion(outputs[local_val_seed_indices], val_data.y[local_val_seed_indices])
                     total_val_loss = val_loss.item()
 
-                avg_val_loss = total_val_loss / len(local_val_seed_indices) # This is now avg loss
+                avg_val_loss = total_val_loss # This is the total loss
                 val_losses_fold.append(avg_val_loss)
                 scheduler.step(avg_val_loss)
 
                 # logging progress
                 if (epoch + 1) % 10 == 0 or (epoch + 1) == parameters["epochs"]:
-                    print(f"Epoch {epoch + 1}/{parameters['epochs']} | Train Loss: {avg_train_loss:.4f} | Val Loss: {avg_val_loss:.4f}")
+                    accelerator.print(f"Epoch {epoch + 1}/{parameters['epochs']} | Train Loss: {avg_train_loss:.4f} | Val Loss: {avg_val_loss:.4f}")
 
                 # early stopping logic
                 if avg_val_loss < best_val_loss_for_fold:
@@ -592,24 +611,24 @@ def train_final_model(accelerator, parameters, data, sample_splits, all_sample_i
                 else:
                     patience_for_fold += 1
                     if patience_for_fold >= parameters["early_stopping_patience_retrain"]:
-                        print(f"Early stopping triggered at epoch {epoch + 1}")
+                        accelerator.print(f"Early stopping triggered at epoch {epoch + 1}")
                         break
         else:
             raise ValueError(f"Unknown training_style: {parameters['training_style']}")
         
         # --- MODIFICATION END ---
         
-        print(f"Fold {fold_idx + 1} finished. Best epoch: {best_epoch_for_fold} with val loss: {best_val_loss_for_fold:.4f}")
+        accelerator.print(f"Fold {fold_idx + 1} finished. Best epoch: {best_epoch_for_fold} with val loss: {best_val_loss_for_fold:.4f}")
 
         # --- after training a fold: save model, plot history, and determine thresholds ---
         if best_model_state_for_fold:
             # save the best model state for this fold
             model_save_path = os.path.join(ensemble_models_dir, f"fold_{fold_idx + 1}_model.pt")
             torch.save(best_model_state_for_fold, model_save_path)
-            print(f"  > Saved best model for fold {fold_idx + 1} to: {model_save_path}")
+            accelerator.print(f"  > Saved best model for fold {fold_idx + 1} to: {model_save_path}")
             # plot and save the training and validation loss history for this fold
-            plt.figure(figsize=(10, 6)); plt.ylim(0.4, 1.0); plt.plot(train_losses_fold, label='Train Loss'); plt.plot(val_losses_fold, label='Validation Loss'); plt.axvline(x=best_epoch_for_fold - 1, color='r', linestyle='--', label=f'Best Epoch ({best_epoch_for_fold})'); plt.title(f'Fold {fold_idx + 1} Training History'); plt.xlabel('Epoch'); plt.ylabel('Average Loss'); plt.legend(); plt.grid(True); plot_path = os.path.join(cv_plots_dir, f"cv_loss_fold_{fold_idx + 1}.png"); plt.savefig(plot_path); plt.close()
-            print(f"  > Saved loss plot to: {plot_path}")
+            plt.figure(figsize=(10, 6)); plt.plot(train_losses_fold, label='Train Loss'); plt.plot(val_losses_fold, label='Validation Loss'); plt.axvline(x=best_epoch_for_fold - 1, color='r', linestyle='--', label=f'Best Epoch ({best_epoch_for_fold})'); plt.title(f'Fold {fold_idx + 1} Training History'); plt.xlabel('Epoch'); plt.ylabel('Loss'); plt.legend(); plt.grid(True); plot_path = os.path.join(cv_plots_dir, f"cv_loss_fold_{fold_idx + 1}.png"); plt.savefig(plot_path); plt.close()
+            accelerator.print(f"  > Saved loss plot to: {plot_path}")
 
             # --- determine and save optimal classification thresholds on the validation set ---
             if parameters['model_type'] == 'GCNModel':
@@ -654,9 +673,9 @@ def train_final_model(accelerator, parameters, data, sample_splits, all_sample_i
             threshold_save_path = os.path.join(ensemble_models_dir, f"fold_{fold_idx + 1}_thresholds.yaml")
             with open(threshold_save_path, 'w') as f:
                 yaml.dump({'plasmid_threshold': fold_params['plasmid_threshold'], 'chromosome_threshold': fold_params['chromosome_threshold']}, f)
-            print(f"  > Fold {fold_idx+1} thresholds saved to: {threshold_save_path}")
+            accelerator.print(f"  > Fold {fold_idx+1} thresholds saved to: {threshold_save_path}")
 
-            print(f"\n--- Evaluating Fold {fold_idx + 1} Model on its Full Validation Set ---")
+            accelerator.print(f"\n--- Evaluating Fold {fold_idx + 1} Model on its Full Validation Set ---")
             
             # evaluate the fold's model on its validation set using the new thresholds
             final_scores_val_fold = torch.from_numpy(utils.apply_thresholds(y_probs_val_fold.numpy(), fold_params))
@@ -673,6 +692,38 @@ def train_final_model(accelerator, parameters, data, sample_splits, all_sample_i
             # calculate and print the final metrics for this fold
             calculate_and_print_metrics(final_scores_full.to(device), raw_probs_full.to(device), data, masks_validate.to(device), G, node_list, verbose=False)
 
+    # After the loop, wait for all processes to finish their assigned folds
+    # before allowing the script to continue.
+    accelerator.wait_for_everyone()
+    end_time_kfold = time.perf_counter()
+
+    # --- ADD THIS BLOCK ---
+    # Get peak memory for this process
+    local_peak_mem_bytes = 0
+    if torch.cuda.is_available():
+        local_peak_mem_bytes = torch.cuda.max_memory_allocated(accelerator.device)
+    
+    # Create a tensor on the device for reduction
+    local_peak_mem_tensor = torch.tensor(local_peak_mem_bytes, device=accelerator.device, dtype=torch.float)
+    
+    # Reduce across all processes to find the maximum peak
+    global_peak_mem_tensor = accelerator.reduce(local_peak_mem_tensor, reduction='max')
+    # --- END OF ADDED BLOCK ---
+
+    if accelerator.is_main_process:
+        elapsed_seconds = end_time_kfold - start_time_kfold
+        
+        # --- THIS PART IS NEW ---
+        peak_mem_gb = global_peak_mem_tensor.item() / (1024**3)
+        accelerator.print("\n" + "="*60)
+        accelerator.print(f"⏱️ [PERF] Total k-fold training (task-parallel):")
+        accelerator.print(f"  > Total Time: {elapsed_seconds:.2f} seconds")
+        accelerator.print(f"  > Max Peak VRAM: {peak_mem_gb:.2f} GB")
+        accelerator.print("="*60)
+        # --- END OF NEW PART ---
+
+    accelerator.print("✅ All parallel fold-training processes finished. Synchronization complete.")
+    accelerator.print("="*66)
 
 
 
