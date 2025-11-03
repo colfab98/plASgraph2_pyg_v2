@@ -44,7 +44,7 @@ def objective(trial, accelerator, parameters, data, sample_splits, all_sample_id
     trial_params_dict['n_channels'] = trial.suggest_int("n_channels", 8, 64, step=16)
     trial_params_dict['n_gnn_layers'] = trial.suggest_int("n_gnn_layers", 2, 6)
     trial_params_dict['dropout_rate'] = trial.suggest_float("dropout_rate", 0.0, 0.3)
-    trial_params_dict['gradient_clipping'] = trial.suggest_float("gradient_clipping", 1.0, 10.0, log=True)
+    #  trial_params_dict['gradient_clipping'] = trial.suggest_float("gradient_clipping", 1.0, 10.0, log=True)
     trial_params_dict['edge_gate_hidden_dim'] = trial.suggest_int("edge_gate_hidden_dim", 8, 32, step=8)
     trial_params_dict['n_channels_preproc'] = trial.suggest_int("n_channels_preproc", 10, 25, step=5)
     trial_params_dict['edge_gate_depth'] = trial.suggest_int("edge_gate_depth", 2, 6)
@@ -210,7 +210,7 @@ def objective(trial, accelerator, parameters, data, sample_splits, all_sample_id
                         total_val_loss += val_loss.item()
                 
                 # --- THIS IS LINE 1 (FIXED) ---
-                avg_val_loss = total_val_loss     # calculate the total validation loss for the epoch
+                avg_val_loss = total_val_loss / len(local_val_seed_indices)
                 scheduler.step(avg_val_loss)    # update learning rate scheduler
 
                 # check for improvement in validation loss for early stopping
@@ -283,7 +283,7 @@ def objective(trial, accelerator, parameters, data, sample_splits, all_sample_id
                     val_loss = criterion(outputs[local_val_seed_indices], val_data.y[local_val_seed_indices])
                     total_val_loss = val_loss.item()
                 
-                avg_val_loss = total_val_loss # Not an average, just the total loss for the epoch
+                avg_val_loss = total_val_loss / len(local_val_seed_indices)
                 scheduler.step(avg_val_loss)
 
                 # check for improvement in validation loss for early stopping
@@ -526,8 +526,7 @@ def train_final_model(accelerator, parameters, data, sample_splits, all_sample_i
                     optimizer.step()
                     total_train_loss += loss.item()
                 
-                # --- THIS IS LINE 2 (FIXED) ---
-                avg_train_loss = total_train_loss
+                avg_train_loss = total_train_loss / len(local_train_seed_indices)
                 train_losses_fold.append(avg_train_loss)
 
                 # plot gradient magnitudes periodically for the first fold to diagnose training
@@ -543,10 +542,8 @@ def train_final_model(accelerator, parameters, data, sample_splits, all_sample_i
                         val_loss = criterion(outputs[:batch.batch_size], batch.y[:batch.batch_size])
                         total_val_loss += val_loss.item()
                 
-                # --- THIS IS LINE 3 (FIXED) ---
-                avg_val_loss = total_val_loss
+                avg_val_loss = total_val_loss / len(local_val_seed_indices)
                 val_losses_fold.append(avg_val_loss)
-                scheduler.step(avg_val_loss)
 
                 # logging progress
                 if (epoch + 1) % 10 == 0 or (epoch + 1) == parameters["epochs"]:
@@ -580,7 +577,7 @@ def train_final_model(accelerator, parameters, data, sample_splits, all_sample_i
                 utils.fix_gradients(parameters, model)
                 optimizer.step()
                 
-                avg_train_loss = loss.item() # This is the total loss, not avg per node
+                avg_train_loss = loss.item() / len(local_train_seed_indices)
                 train_losses_fold.append(avg_train_loss)
 
                 # plot gradient magnitudes periodically
@@ -594,7 +591,7 @@ def train_final_model(accelerator, parameters, data, sample_splits, all_sample_i
                     val_loss = criterion(outputs[local_val_seed_indices], val_data.y[local_val_seed_indices])
                     total_val_loss = val_loss.item()
 
-                avg_val_loss = total_val_loss # This is the total loss
+                avg_val_loss = total_val_loss / len(local_val_seed_indices)
                 val_losses_fold.append(avg_val_loss)
                 scheduler.step(avg_val_loss)
 

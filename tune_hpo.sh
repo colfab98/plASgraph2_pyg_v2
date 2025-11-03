@@ -1,8 +1,8 @@
 #!/bin/bash
 #SBATCH --job-name=tune_hpo
 #SBATCH --nodes=1
-#SBATCH --ntasks-per-node=2
-#SBATCH --gpus=2
+#SBATCH --ntasks-per-node=1
+#SBATCH --gpus=1
 #SBATCH --time=24:00:00
 #SBATCH --output=slurm_logs/%x-%j.out
 #SBATCH --error=slurm_logs/%x-%j.err

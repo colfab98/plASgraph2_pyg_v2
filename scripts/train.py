@@ -58,7 +58,7 @@ def plot_gpu_utilization(csv_file, output_png):
         # Add average line to the plot
         plt.axhline(y=avg_util, color='r', linestyle='--', label=f'Avg. (when >0%): {avg_util:.2f}%')
         
-        plt.title(f'GPU Utilization Over Time\n(File: {os.path.basename(csv_file)})')
+        plt.title(f'GPU Utilization Over Time')
         plt.xlabel('Elapsed Time (seconds)')
         plt.ylabel('GPU Utilization (%)')
         plt.legend()

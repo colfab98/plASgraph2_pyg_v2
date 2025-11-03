@@ -121,7 +121,7 @@ def main():
                 # get raw probabilities (for AUROC calculation)
                 outputs = model(data_test) # This line is here. It contains logits OR probs.
 
-                if parameters['output_activation'] == 'none':
+                if parameters['output_activation'] is None:
                     probs = torch.sigmoid(outputs) # Convert logits to probs
                 else:
                     probs = outputs # Is already probs

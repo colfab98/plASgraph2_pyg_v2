@@ -76,7 +76,11 @@ class GCNModel(torch.nn.Module):
         x = self.dropout(x)
         x = self.final_fc2(x)
 
-        output_act_fn = activation_map[self['output_activation']]
+        act_key = self['output_activation']
+        if act_key is None:
+            return x # Return raw logits
+
+        output_act_fn = activation_map[act_key]
         x = output_act_fn(x)
 
         return x
@@ -382,7 +386,11 @@ class GGNNModel(torch.nn.Module):
         # final classification logits
         x = self.final_fc2(x) 
 
-        output_act_fn = activation_map[self['output_activation']]
+        act_key = self['output_activation']
+        if act_key is None:
+            return x # Return raw logits
+
+        output_act_fn = activation_map[act_key]
         x = output_act_fn(x)
 
         return x
