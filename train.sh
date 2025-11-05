@@ -8,12 +8,12 @@
 #SBATCH --output=slurm_logs/%x-%j.out
 #SBATCH --error=slurm_logs/%x-%j.err
 
-export RUN_NAME="run_13" 
+export RUN_NAME="run_14.1" 
 
 mkdir -p runs/${RUN_NAME}
 mkdir -p runs/${RUN_NAME}/final_model
 
-
+# Original plASgraph2 dataset
 PYTHONUNBUFFERED=1 accelerate launch --num_processes=4 --mixed_precision=fp16 -m scripts.train \
     --run_name ${RUN_NAME} \
     plasgraph_config.yaml \
@@ -21,7 +21,7 @@ PYTHONUNBUFFERED=1 accelerate launch --num_processes=4 --mixed_precision=fp16 -m
     plasgraph2-datasets/ \
     > runs/${RUN_NAME}/final_model/train.log 2> runs/${RUN_NAME}/final_model/train.err
 
-
+# My own dataset 
 # PYTHONUNBUFFERED=1 accelerate launch --num_processes=1 --mixed_precision=fp16 -m scripts.train \
 #     --run_name ${RUN_NAME} \
 #     plasgraph_config.yaml \

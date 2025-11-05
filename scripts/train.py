@@ -16,6 +16,9 @@ import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 
+from accelerate.utils import InitProcessGroupKwargs  # <-- 1. ADD THIS IMPORT
+from datetime import timedelta
+
 # Import modules from our library
 from plasgraph.data import Dataset_Pytorch
 from plasgraph.config import config as Config
@@ -159,7 +162,11 @@ def main():
     gpu_metrics_dir = os.path.join(model_output_dir, "gpu_metrics")
     os.makedirs(gpu_metrics_dir, exist_ok=True)
 
-    accelerator = Accelerator()
+    ipg_kwargs = InitProcessGroupKwargs(timeout=timedelta(minutes=60))
+
+    # 4. PASS THE HANDLER to the Accelerator
+    #    (This replaces the line that caused the error)
+    accelerator = Accelerator(kwargs_handlers=[ipg_kwargs])
 
     if accelerator.is_main_process:
         print("----------------------------------------")

@@ -103,7 +103,12 @@ def classify_with_ensemble(parameters, model_paths, threshold_paths, graph_file,
 
             # Get raw probabilities from the model
             logits = model(data_obj)
-            probs = torch.sigmoid(logits)
+            
+            # --- Handle different output activations ---
+            if temp_params['output_activation'] is None:
+                probs = torch.sigmoid(logits) # Convert logits to probs
+            else:
+                probs = logits # Output is already probabilities
             
             # Apply this fold's specific thresholds to get final, scaled scores
             final_scores = torch.from_numpy(
@@ -166,18 +171,43 @@ def main_gfa(args):
     model_dir = os.path.join("runs", args.run_name, "final_model")
     classify_dir = os.path.join("runs", args.run_name, "classify")
     os.makedirs(classify_dir, exist_ok=True)
-    output_path = os.path.join(classify_dir, args.output_filename)
 
+    # --- MODIFICATION START ---
+    
+    # Get the base filename, e.g., "robertson-benchmark_abau-SAMN10163228-u.gfa.gz"
+    base_gfa_name = os.path.basename(args.graph_file)
+
+    # Intelligently get the sample_id, removing known extensions
+    # e.g., "robertson-benchmark_abau-SAMN10163228-u"
+    if base_gfa_name.endswith(".gfa.gz"):
+        sample_id = base_gfa_name[:-7] # Remove .gfa.gz
+    elif base_gfa_name.endswith(".gfa"):
+        sample_id = base_gfa_name[:-4] # Remove .gfa
+    else:
+        # Fallback
+        sample_id = base_gfa_name.split('.')[0]
+    
+    # Check if output_filename was provided
+    if args.output_filename:
+        output_filename = args.output_filename
+    else:
+        # --- MODIFICATION: Removed '_plasgraph' from this line ---
+        output_filename = f"{sample_id}.csv"
+        print(f"No output filename provided. Auto-generating: {output_filename}")
+    
+    # The output path is now based on the (potentially auto-generated) filename
+    output_path = os.path.join(classify_dir, output_filename)
+    
+    # --- MODIFICATION END ---
+    
     parameters, model_paths, threshold_paths = load_ensemble_and_config(model_dir)
-    # A more robust way to get a sample ID from the filename
-    sample_id = os.path.basename(args.graph_file).split('.')[0]
     
     print(f"Processing sample: {sample_id}...")
     prediction_df = classify_with_ensemble(
         parameters, model_paths, threshold_paths,
         graph_file=args.graph_file,
         file_prefix='', # No prefix for a direct file path
-        sample_id=sample_id
+        sample_id=sample_id # Use the new, robust sample_id
     )
     
     prediction_df.to_csv(output_path, header=True, index=False, mode='w')
@@ -199,7 +229,15 @@ if __name__ == "__main__":
     # Subparser for classifying a single GFA file
     p_gfa = subparsers.add_parser('gfa', help="Classify a single GFA file.")
     p_gfa.add_argument("graph_file", help="Path to the input GFA or GFA.gz file.")
-    p_gfa.add_argument("output_filename", help="Name for the output CSV file (e.g., 'sample_x_results.csv').")
+    
+    # Make the output_filename optional
+    p_gfa.add_argument(
+        "output_filename", 
+        help="Name for the output CSV file. If omitted, it will be auto-generated based on the GFA filename (e.g., 'my_sample.csv').",
+        nargs='?',  # Makes the argument optional
+        default=None # Sets the default value if not provided
+    )
+    
     p_gfa.set_defaults(func=main_gfa)
 
     args = parser.parse_args()

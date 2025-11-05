@@ -34,9 +34,18 @@ class DummyAccelerator:
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
-def create_plots(df, layer_num, output_dir):
+def create_plots(df, layer_num, output_dir, feature_method):
     """Generates and saves a set of plots for a layer's gate data."""
     
+    # --- Determine the correct label based on the feature method ---
+    if feature_method == 'emb':
+        attr_label = 'Edge Attribute (DNABERT Cosine Similarity)'
+    elif feature_method == 'kmer':
+        attr_label = 'Edge Attribute (K-mer Dot Product)'
+    else:
+        attr_label = 'Edge Attribute'
+    # -------------------------------------------------------------
+
     plt.figure(figsize=(10, 6))
     sns.histplot(df['gate_value'], bins=50, kde=True)
     plt.title(f'Layer {layer_num}: Distribution of Edge Gate Values')
@@ -50,7 +59,7 @@ def create_plots(df, layer_num, output_dir):
     sample_df = df.sample(n=min(5000, len(df)))
     sns.scatterplot(data=sample_df, x='edge_attr', y='gate_value', alpha=0.5, s=10)
     plt.title(f'Layer {layer_num}: Gate Value vs. Edge Attribute')
-    plt.xlabel('Edge Attribute (e.g., K-mer Dot Product)')
+    plt.xlabel(attr_label) # <-- Use the dynamic label here
     plt.ylabel('Gate Value')
     plt.grid(True, alpha=0.3)
     plt.savefig(os.path.join(output_dir, f'gate_vs_attr_layer_{layer_num}.png'))
@@ -181,9 +190,10 @@ def main():
         print(f"✅ Saved detailed data to {csv_path}")
 
         print("Gate Value Summary:")
+        # ... (code to save CSV) ...
         print(df['gate_value'].describe())
 
-        create_plots(df, layer_num, plots_dir)
+        create_plots(df, layer_num, plots_dir, parameters['feature_generation_method']) # <-- CHANGE THIS LINE
         print(f"✅ Saved plots for Layer {layer_num}")
         
     print("\nAll done!")

@@ -482,6 +482,9 @@ def train_final_model(accelerator, parameters, data, sample_splits, all_sample_i
         # variables for training loop and early stopping
         best_val_loss_for_fold, patience_for_fold, best_epoch_for_fold = float("inf"), 0, 0
         best_model_state_for_fold = None
+
+        best_gradients_for_fold = None
+
         train_losses_fold, val_losses_fold = [], []
         plot_frequency = max(1, parameters["epochs"] // 10)
         
@@ -516,6 +519,7 @@ def train_final_model(accelerator, parameters, data, sample_splits, all_sample_i
             for epoch in range(parameters["epochs"]):
                 model.train()
                 total_train_loss = 0
+                current_gradients = None
                 for batch in train_loader:
                     batch = batch.to(device)
                     optimizer.zero_grad()
@@ -523,6 +527,7 @@ def train_final_model(accelerator, parameters, data, sample_splits, all_sample_i
                     loss = criterion(outputs[:batch.batch_size], batch.y[:batch.batch_size])
                     loss.backward()
                     utils.fix_gradients(parameters, model)
+                    current_gradients = utils.get_gradient_magnitudes(model)
                     optimizer.step()
                     total_train_loss += loss.item()
                 
@@ -555,6 +560,7 @@ def train_final_model(accelerator, parameters, data, sample_splits, all_sample_i
                     best_epoch_for_fold = epoch + 1
                     patience_for_fold = 0
                     best_model_state_for_fold = copy.deepcopy(model.state_dict())
+                    best_gradients_for_fold = current_gradients
                 else:
                     patience_for_fold += 1
                     if patience_for_fold >= parameters["early_stopping_patience_retrain"]:
@@ -575,6 +581,7 @@ def train_final_model(accelerator, parameters, data, sample_splits, all_sample_i
                 loss = criterion(outputs[local_train_seed_indices], train_data.y[local_train_seed_indices])
                 loss.backward()
                 utils.fix_gradients(parameters, model)
+                current_gradients = utils.get_gradient_magnitudes(model)
                 optimizer.step()
                 
                 avg_train_loss = loss.item() / len(local_train_seed_indices)
@@ -605,6 +612,7 @@ def train_final_model(accelerator, parameters, data, sample_splits, all_sample_i
                     best_epoch_for_fold = epoch + 1
                     patience_for_fold = 0
                     best_model_state_for_fold = copy.deepcopy(model.state_dict())
+                    best_gradients_for_fold = current_gradients
                 else:
                     patience_for_fold += 1
                     if patience_for_fold >= parameters["early_stopping_patience_retrain"]:
@@ -613,7 +621,12 @@ def train_final_model(accelerator, parameters, data, sample_splits, all_sample_i
         else:
             raise ValueError(f"Unknown training_style: {parameters['training_style']}")
         
-        # --- MODIFICATION END ---
+        if best_gradients_for_fold and (fold_idx == 0): # Still only plot for the first fold
+            utils.plot_gradient_magnitudes_best( # <-- Call new function
+                best_gradients_for_fold, 
+                best_epoch_for_fold, 
+                cv_plots_dir 
+            )
         
         accelerator.print(f"Fold {fold_idx + 1} finished. Best epoch: {best_epoch_for_fold} with val loss: {best_val_loss_for_fold:.4f}")
 

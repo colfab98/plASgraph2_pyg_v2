@@ -136,27 +136,27 @@ python -m scripts.explain node \
 
 
 
-Classify:
+Classify & Visualize predictions:
 
-export RUN_NAME="eskapee_v2"   
-GFA_PATH="/home/fcolanto/plASgraph2_pyg_v2/plasgraph2-datasets/eskapee-test/robertson-benchmark_abau-SAMN10163228-u.gfa.gz"   
-OUT_BASENAME="SAMN10163228_plasgraph.csv" 
+RUN_NAME="run_14.1"
+GFA_PATH="plASgraph2_pyg_v2/plasgraph2-datasets/eskapee-test/robertson-benchmark_abau-SAMN10163228-u.gfa.gz"
 
 mkdir -p "runs/${RUN_NAME}/classify"
 python -m scripts.classify \
     --run_name "${RUN_NAME}" \
-    gfa "${GFA_PATH}" \
-    "${OUT_BASENAME}" \
-    > "runs/${RUN_NAME}/classify/${OUT_BASENAME%.csv}.log" \
-    2> "runs/${RUN_NAME}/classify/${OUT_BASENAME%.csv}.err"
+    gfa "${GFA_PATH#plASgraph2_pyg_v2/}" \
+    > "runs/${RUN_NAME}/classify/classify.log" \
+    2> "runs/${RUN_NAME}/classify/classify.err"
 
 
-Visualize predictions:
+LABEL_FILE="plASgraph2_pyg_v2/plasgraph2-datasets/eskapee-test/robertson-benchmark_abau-SAMN10163228-u.gfa.csv"
 
 python -m scripts.visualize_predictions \
     --run_name "${RUN_NAME}" \
-    --prediction_file "runs/eskapee_v1/classify/bacillus_bant-SAMN03024436-u_results.csv" \
-    --gfa_file "plasgraph2-datasets/bacillus-test/bacillus_bant-SAMN03024436-u.gfa.gz" \
-    --label_file "plasgraph2-datasets/bacillus-test/bacillus_bant-SAMN03024436-u.gfa.csv" \
-    > runs/"${RUN_NAME}"/visualizations/bacillus_bant-SAMN03024436-u_visual.log \
-    2> runs/"${RUN_NAME}"/visualizations/bacillus_bant-SAMN03024436-u_visual.err
+    --prediction_file "runs/${RUN_NAME}/classify/$(echo $(basename "${GFA_PATH}") | sed 's/\.gfa\.gz$//' | sed 's/\.gfa$//').csv" \
+    --gfa_file "${GFA_PATH#plASgraph2_pyg_v2/}" \
+    --label_file "${LABEL_FILE#plASgraph2_pyg_v2/}"
+
+
+
+

@@ -110,6 +110,42 @@ def plot_gradient_magnitudes(grad_data, epoch, log_dir, plot_frequency=10):
     plt.savefig(plot_path)
     plt.close()
 
+def plot_gradient_magnitudes_best(grad_data, epoch, log_dir):
+    """
+    Generates and saves a violin plot for the single best epoch.
+    This is a separate function to ensure a unique filename.
+    """
+    if not grad_data: 
+        return
+    
+    plot_df_data = []
+    for layer, magnitudes in grad_data.items():
+        for mag in magnitudes:
+            plot_df_data.append({'Layer': layer, 'Gradient Magnitude': mag})
+    if not plot_df_data:
+        return
+    plot_df = pd.DataFrame(plot_df_data)
+    unique_layers = sorted(plot_df['Layer'].unique())
+    plot_df['Layer'] = pd.Categorical(plot_df['Layer'], categories=unique_layers, ordered=True)
+    plot_df = plot_df.sort_values('Layer')
+
+    plt.figure(figsize=(15, 8))
+    sns.violinplot(x='Layer', y='Gradient Magnitude', data=plot_df, inner='quartile', hue='Layer', palette='viridis', legend=False)
+    if plot_df['Gradient Magnitude'].max() > 0:
+        plt.yscale('log')
+
+    plt.title(f'Gradient Magnitude Distribution per Layer (BEST Epoch {epoch})') # <-- Changed title
+    plt.xlabel('Neural Network Layer')
+    plt.ylabel('Log Gradient Magnitude')
+    plt.xticks(rotation=45, ha='right')
+    plt.tight_layout()
+    
+    # --- Use a unique filename ---
+    plot_path = os.path.join(log_dir, f"gradient_magnitudes_BEST_EPOCH_{epoch}.png") 
+    
+    plt.savefig(plot_path)
+    plt.close()
+
 
 def plot_f1_violin(plasmid_scores, chromosome_scores, output_dir):
     """
