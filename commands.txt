@@ -1,7 +1,7 @@
 Clone project:
 git clone https://github.com/colfab98/plASgraph2_pyg_v2
 
-Clone dataset:
+Clone plASgraph2 original dataset:
 cd plASgraph2_pyg_v2
 git clone https://github.com/fmfi-compbio/plasgraph2-datasets.git
 
@@ -27,120 +27,117 @@ If Mac:
 
 
 
-
-
-export RUN_NAME="run_"
-
-
 Optuna:
 
-python -u -m scripts.tune_hpo \
-    --run_name ${RUN_NAME} \
-    plasgraph_config.yaml \
-    plasgraph2-datasets/eskapee-train.csv \
-    plasgraph2-datasets/ \
-    > runs/${RUN_NAME}/hpo_study/hpo.log 2> runs/${RUN_NAME}/hpo_study/hpo.err
+Local: 
+    export RUN_NAME="run_"
+    python -u -m scripts.tune_hpo \
+        --run_name ${RUN_NAME} \
+        plasgraph_config.yaml \
+        plasgraph2-datasets/eskapee-train.csv \
+        plasgraph2-datasets/ \
+        > runs/${RUN_NAME}/hpo_study/hpo.log 2> runs/${RUN_NAME}/hpo_study/hpo.err
 
-mkdir -p runs/${RUN_NAME}
-PYTHONUNBUFFERED=1 accelerate launch --num_processes=1 --mixed_precision=fp16 -m scripts.tune_hpo \
-    --run_name ${RUN_NAME} \
-    plasgraph_config.yaml \
-    plasgraph2-datasets/eskapee-train.csv \
-    plasgraph2-datasets/ \
-    > runs/${RUN_NAME}/hpo_study/hpo.log 2> runs/${RUN_NAME}/hpo_study/hpo.err
+HPC1:
+    sbatch tune_hpo.sh
 
-optuna-dashboard sqlite:///runs/${RUN_NAME}/hpo_study/hpo_study.db
+HPC2:
+    mkdir -p runs/${RUN_NAME}
+    PYTHONUNBUFFERED=1 accelerate launch --num_processes=1 --mixed_precision=fp16 -m scripts.tune_hpo \
+        --run_name ${RUN_NAME} \
+        plasgraph_config.yaml \
+        plasgraph2-datasets/eskapee-train.csv \
+        plasgraph2-datasets/ \
+        > runs/${RUN_NAME}/hpo_study/hpo.log 2> runs/${RUN_NAME}/hpo_study/hpo.err
+
+View dashboard:
+    optuna-dashboard sqlite:///runs/${RUN_NAME}/hpo_study/hpo_study.db
 
 
 
 Audit Data:
 
-mkdir -p runs/${RUN_NAME}/feature_analysis/ && \
-python -u -m scripts.audit_cached_data \
-    --run_name ${RUN_NAME} \
-    plasgraph_config.yaml \
-    plasgraph2-datasets/eskapee-train.csv \
-    plasgraph2-datasets/ \
-    > runs/${RUN_NAME}/feature_analysis/audit.log \
-    2> runs/${RUN_NAME}/feature_analysis/audit.err
+    export RUN_NAME="run_"
+    mkdir -p runs/${RUN_NAME}/feature_analysis/ && \
+    python -u -m scripts.audit_cached_data \
+        --run_name ${RUN_NAME} \
+        plasgraph_config.yaml \
+        plasgraph2-datasets/eskapee-train.csv \
+        plasgraph2-datasets/ \
+        > runs/${RUN_NAME}/feature_analysis/audit.log \
+        2> runs/${RUN_NAME}/feature_analysis/audit.err
 
 
 
 Final Training:
 
-python -u -m scripts.train \
-    --run_name ${RUN_NAME} \
-    plasgraph_config.yaml \
-    plasgraph2-datasets/eskapee-train.csv \
-    plasgraph2-datasets/ \
-    --training_mode k-fold \
-    > runs/${RUN_NAME}/final_model/train.log 2> runs/${RUN_NAME}/final_model/train.err
+Local:
+    export RUN_NAME="run_"
+    python -u -m scripts.train \
+        --run_name ${RUN_NAME} \
+        plasgraph_config.yaml \
+        plasgraph2-datasets/eskapee-train.csv \
+        plasgraph2-datasets/ \
+        --training_mode k-fold \
+        > runs/${RUN_NAME}/final_model/train.log 2> runs/${RUN_NAME}/final_model/train.err
 
+HPC1:
+    sbatch train.sh
 
-mkdir -p runs/${RUN_NAME}
-mkdir -p runs/${RUN_NAME}/final_model
-PYTHONUNBUFFERED=1 accelerate launch --num_processes=1 --mixed_precision=fp16 -m scripts.train \
-    --run_name ${RUN_NAME} \
-    plasgraph_config.yaml \
-    plasgraph2-datasets/eskapee-train.csv \
-    plasgraph2-datasets/ \
-    --training_mode k-fold \
-    > runs/${RUN_NAME}/final_model/train.log 2> runs/${RUN_NAME}/final_model/train.err
+HPC2:
+    export RUN_NAME="run_"
+    mkdir -p runs/${RUN_NAME}
+    mkdir -p runs/${RUN_NAME}/final_model
+    PYTHONUNBUFFERED=1 accelerate launch --num_processes=1 --mixed_precision=fp16 -m scripts.train \
+        --run_name ${RUN_NAME} \
+        plasgraph_config.yaml \
+        plasgraph2-datasets/eskapee-train.csv \
+        plasgraph2-datasets/ \
+        --training_mode k-fold \
+        > runs/${RUN_NAME}/final_model/train.log 2> runs/${RUN_NAME}/final_model/train.err
+
 
 
 Analyse Edge Gates:
 
-export RUN_NAME="name"
-
-mkdir -p runs/${RUN_NAME}/gate_analysis
-python -u -m scripts.analyze_gates \
-    --run_name ${RUN_NAME} \
-    plasgraph2-datasets/eskapee-train.csv \
-    plasgraph2-datasets/ \
-    > runs/${RUN_NAME}/gate_analysis/analyze_gates.log 2> runs/${RUN_NAME}/gate_analysis/analyze_gates.err
+    export RUN_NAME="run_"
+    mkdir -p runs/${RUN_NAME}/gate_analysis
+    python -u -m scripts.analyze_gates \
+        --run_name ${RUN_NAME} \
+        plasgraph2-datasets/eskapee-train.csv \
+        plasgraph2-datasets/ \
+        > runs/${RUN_NAME}/gate_analysis/analyze_gates.log 2> runs/${RUN_NAME}/gate_analysis/analyze_gates.err
 
 
 
 Evaluate:
 
-mkdir -p runs/${RUN_NAME}/evaluation_results
-python -u -m scripts.evaluate \
-    --run_name ${RUN_NAME} \
-    plasgraph2-datasets/eskapee-test.csv \
-    plasgraph2-datasets/ \
-    > runs/${RUN_NAME}/evaluation_results/eval.log 2> runs/${RUN_NAME}/evaluation_results/eval.err
+Local:
+    export RUN_NAME="run_"
+    mkdir -p runs/${RUN_NAME}/evaluation_results
+    python -u -m scripts.evaluate \
+        --run_name ${RUN_NAME} \
+        plasgraph2-datasets/eskapee-test.csv \
+        plasgraph2-datasets/ \
+        > runs/${RUN_NAME}/evaluation_results/eval.log 2> runs/${RUN_NAME}/evaluation_results/eval.err
 
-mkdir -p runs/${RUN_NAME}/evaluation_results
-accelerate launch --num_processes=1 --mixed_precision=fp16 -m scripts.evaluate \
-    --run_name ${RUN_NAME} \
-    plasgraph2-datasets/eskapee-test.csv \
-    plasgraph2-datasets/ \
-    > runs/${RUN_NAME}/evaluation_results/eval.log 2> runs/${RUN_NAME}/evaluation_results/eval.err
+HPC1:
+    sbatch evaluate.sh
 
-
-
-Explain:
-
-python -m scripts.explain list-contigs \
-    output/ESKAPEE_final_model/ \
-    eskapee-test/robertson-benchmark_paer-SAMN10163177-s.gfa.gz \
-    SAMN10163177 \
-    --file_prefix plasgraph2-datasets/
-
-
-python -m scripts.explain node \
-    output/ESKAPEE_final_model/ \
-    eskapee-test/robertson-benchmark_paer-SAMN10163177-s.gfa.gz \
-    SAMN10163177 \
-    'Contig_42_280.615' \
-    output/explanation_node/ \
-    --file_prefix plasgraph2-datasets/
+HPC2:
+    export RUN_NAME="run_"
+    mkdir -p runs/${RUN_NAME}/evaluation_results
+    accelerate launch --num_processes=1 --mixed_precision=fp16 -m scripts.evaluate \
+        --run_name ${RUN_NAME} \
+        plasgraph2-datasets/eskapee-test.csv \
+        plasgraph2-datasets/ \
+        > runs/${RUN_NAME}/evaluation_results/eval.log 2> runs/${RUN_NAME}/evaluation_results/eval.err
 
 
 
 Classify & Visualize predictions:
 
-RUN_NAME="run_14.1"
+RUN_NAME="run_"
 GFA_PATH="plASgraph2_pyg_v2/plasgraph2-datasets/cfre-test/shaw-2021_cfre-SAMN15148288-u.gfa.gz"
 
 mkdir -p "runs/${RUN_NAME}/classify"
