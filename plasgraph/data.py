@@ -372,15 +372,13 @@ class Dataset_Pytorch(InMemoryDataset):
         # --- final data assembly on the main process ---
         if self.accelerator.is_main_process:
             elapsed_seconds = end_time_emb - start_time_emb
-            
-            # --- THIS PART IS NEW ---
+
             peak_mem_gb = global_peak_mem_tensor.item() / (1024**3)
             self.accelerator.print("\n" + "="*60)
             self.accelerator.print(f"⏱️ [PERF] DNABERT embedding (data-parallel):")
             self.accelerator.print(f"  > Total Time: {elapsed_seconds:.2f} seconds")
             self.accelerator.print(f"  > Max Peak VRAM: {peak_mem_gb:.2f} GB")
             self.accelerator.print("="*60)
-            # --- END OF NEW PART ---
             
             node_to_idx = {node_id: i for i, node_id in enumerate(self.node_list)}
             edge_list = list(self.G.edges())

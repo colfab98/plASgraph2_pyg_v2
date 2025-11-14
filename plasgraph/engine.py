@@ -40,20 +40,27 @@ def objective(trial, accelerator, parameters, data, sample_splits, all_sample_id
     # create a copy of base parameters to modify for this specific trial
     trial_params_dict = parameters._params.copy()
     # use the 'trial' object to suggest hyperparameter values for optuna to optimize
-    trial_params_dict['l2_reg'] = trial.suggest_float("l2_reg", 1e-5, 1e-3, log=True)
-    trial_params_dict['n_channels'] = trial.suggest_int("n_channels", 8, 64, step=16)
-    trial_params_dict['n_gnn_layers'] = trial.suggest_int("n_gnn_layers", 2, 6)
+    trial_params_dict['l2_reg'] = trial.suggest_float("l2_reg", 1e-6, 1e-2, log=True)
+    trial_params_dict['n_channels'] = trial.suggest_int("n_channels", 8, 64, step=8)
+    trial_params_dict['n_gnn_layers'] = trial.suggest_int("n_gnn_layers", 2, 8)
     trial_params_dict['dropout_rate'] = trial.suggest_float("dropout_rate", 0.0, 0.3)
-    #  trial_params_dict['gradient_clipping'] = trial.suggest_float("gradient_clipping", 1.0, 10.0, log=True)
-    trial_params_dict['edge_gate_hidden_dim'] = trial.suggest_int("edge_gate_hidden_dim", 8, 32, step=8)
-    trial_params_dict['n_channels_preproc'] = trial.suggest_int("n_channels_preproc", 10, 25, step=5)
+
+    clipping_mode = trial.suggest_categorical("clipping_mode", ["on", "off"])
+    if clipping_mode == "on":
+        trial_params_dict['gradient_clipping'] = trial.suggest_float("gradient_clipping_value", 0.1, 10000.0, log=True)
+    else:
+        trial_params_dict['gradient_clipping'] = 0.0
+
+    trial_params_dict['edge_gate_hidden_dim'] = trial.suggest_int("edge_gate_hidden_dim", 8, 64, step=8)
+    trial_params_dict['n_channels_preproc'] = trial.suggest_int("n_channels_preproc", 5, 20, step=5)
     trial_params_dict['edge_gate_depth'] = trial.suggest_int("edge_gate_depth", 2, 6)
-    trial_params_dict['batch_size'] = trial.suggest_categorical('batch_size', [64, 128 , 256, 512, 1024])
+    # trial_params_dict['batch_size'] = trial.suggest_categorical('batch_size', [64, 128 , 256, 512, 1024])
     # ensure subsequent hop neighbors are less than or equal to the first hop
-    first_hop_val = trial.suggest_int("neighbors_first_hop", 10, 50, step=10)
+    first_hop_val = trial.suggest_int("neighbors_first_hop", 5, 50, step=5)
     trial_params_dict['first_hop_neighbors'] = first_hop_val
-    trial_params_dict['subsequent_hop_neighbors'] = trial.suggest_int("neighbors_subsequent_hops", 10, first_hop_val, step=5)
-    trial_params_dict['learning_rate'] = trial.suggest_float("learning_rate", 1e-5, 1e-2, log=True)
+    trial_params_dict['subsequent_hop_neighbors'] = trial.suggest_int("neighbors_subsequent_hops", 5, first_hop_val, step=5)
+    trial_params_dict['learning_rate'] = trial.suggest_float("learning_rate", 1e-6, 1e-2, log=True)
+    # trial_params_dict['use_edge_read_counts'] = trial.suggest_categorical('use_edge_read_counts', [True, False])
 
     # construct the list of neighbors to sample for each gnn layer
     n_layers = trial_params_dict['n_gnn_layers']
@@ -149,7 +156,7 @@ def objective(trial, accelerator, parameters, data, sample_splits, all_sample_id
         # learning rate scheduler to reduce the learning rate on validation loss plateau
         scheduler = ReduceLROnPlateau(optimizer, 'min', factor=trial_config_obj['scheduler_factor'], patience=trial_config_obj['scheduler_patience'])
         # loss function
-        if trial_config_obj['output_activation'] == 'none':
+        if trial_config_obj['output_activation'] is None:
             criterion = torch.nn.BCEWithLogitsLoss(reduction='sum')
         else:
             criterion = torch.nn.BCELoss(reduction='sum')
@@ -242,7 +249,7 @@ def objective(trial, accelerator, parameters, data, sample_splits, all_sample_id
                         batch = batch.to(device)
                         outputs = inference_model(batch)
                         # convert logits to probabilities using sigmoid
-                        if trial_config_obj['output_activation'] == 'none':
+                        if trial_config_obj['output_activation'] is None:
                             probs = torch.sigmoid(outputs[:batch.batch_size])
                         else:
                             probs = outputs[:batch.batch_size] # Already probabilities
@@ -310,7 +317,7 @@ def objective(trial, accelerator, parameters, data, sample_splits, all_sample_id
                 with torch.no_grad():
                     outputs = inference_model(val_data)
                     # Get probs and true labels ONLY for labeled nodes
-                    if trial_config_obj['output_activation'] == 'none':
+                    if trial_config_obj['output_activation'] is None:
                         probs = torch.sigmoid(outputs[local_val_seed_indices])
                     else:
                         probs = outputs[local_val_seed_indices] # Already probabilities
@@ -474,7 +481,7 @@ def train_final_model(accelerator, parameters, data, sample_splits, all_sample_i
 
         optimizer = optim.Adam(model.parameters(), lr=parameters['learning_rate'], weight_decay=parameters['l2_reg'])
         scheduler = ReduceLROnPlateau(optimizer, 'min', factor=parameters['scheduler_factor'], patience=parameters['scheduler_patience'], verbose=True)
-        if parameters['output_activation'] == 'none':
+        if parameters['output_activation'] is None:
             criterion = torch.nn.BCEWithLogitsLoss(reduction='sum')
         else:
             criterion = torch.nn.BCELoss(reduction='sum')
@@ -655,7 +662,7 @@ def train_final_model(accelerator, parameters, data, sample_splits, all_sample_i
                     for batch in val_loader: # Use the val_loader defined above
                         batch = batch.to(device)
                         outputs = inference_model(batch)
-                        if parameters['output_activation'] == 'none':
+                        if parameters['output_activation'] is None:
                             probs = torch.sigmoid(outputs[:batch.batch_size])
                         else:
                             probs = outputs[:batch.batch_size]
@@ -664,7 +671,7 @@ def train_final_model(accelerator, parameters, data, sample_splits, all_sample_i
                 elif parameters['training_style'] == 'full_graph':
                     val_data = val_data.to(device) # Ensure val_data is on device
                     outputs = inference_model(val_data)
-                    if parameters['output_activation'] == 'none':
+                    if parameters['output_activation'] is None:
                         probs = torch.sigmoid(outputs[local_val_seed_indices])
                     else:
                         probs = outputs[local_val_seed_indices]

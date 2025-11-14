@@ -7,7 +7,6 @@ import yaml
 import numpy as np
 import torch_geometric
 
-# Import from the plasgraph library
 from plasgraph.config import config as Config
 from plasgraph.models import GCNModel, GGNNModel
 from plasgraph.data import read_single_graph
@@ -15,19 +14,16 @@ from plasgraph.utils import pair_to_label, apply_thresholds
 
 def load_ensemble_and_config(model_dir):
     """
-    Loads the base configuration and finds all model and threshold files
-    for the k-fold ensemble.
+    loads the base configuration and discovers all trained fold models.
+    essential for preparing the ensemble inference pipeline.
     """
     config_path = os.path.join(model_dir, "base_model_config.yaml")
     if not os.path.exists(config_path):
         raise FileNotFoundError(f"Base config file not found at {config_path}")
     parameters = Config(config_path)
     
-    # FIX: Manually attach the config file path to the parameters object.
-    # This makes it accessible later when creating temporary config copies.
     parameters.config_file_path = config_path
-
-    # Correctly locate the directory where fold models are saved
+    
     ensemble_dir = os.path.join(model_dir, "final_training_logs", "ensemble_models")
     model_paths = sorted(glob.glob(os.path.join(ensemble_dir, "fold_*_model.pt")))
     threshold_paths = sorted(glob.glob(os.path.join(ensemble_dir, "fold_*_thresholds.yaml")))
@@ -40,7 +36,7 @@ def load_ensemble_and_config(model_dir):
 
 def classify_with_ensemble(parameters, model_paths, threshold_paths, graph_file, file_prefix, sample_id):
     """
-    Classifies a single graph using the full model ensemble, correctly applying
+    classifies a single graph using the full model ensemble, correctly applying
     per-fold thresholds before averaging.
     """
     if torch.cuda.is_available():
@@ -48,18 +44,18 @@ def classify_with_ensemble(parameters, model_paths, threshold_paths, graph_file,
     else:
         device = torch.device("cpu")
     
-    # --- Step 1: Load and process the graph data ONCE ---
+    # load and process the graph data once
     G = read_single_graph(file_prefix, graph_file, sample_id, parameters['minimum_contig_length'])
     node_list = list(G)
 
-    # Calculate k-mer dot products for edges
+    # calculate k-mer dot products for edges (needed for GGNN edge gates)
     for u, v in G.edges():
         kmer_u = np.array(G.nodes[u]["kmer_counts_norm"])
         kmer_v = np.array(G.nodes[v]["kmer_counts_norm"])
         dot_product = np.dot(kmer_u, kmer_v)
         G.edges[u, v]["kmer_dot_product"] = dot_product
 
-    # Prepare the PyG Data object
+    # construct the pytorch geometric data object
     features = parameters["features"]
     x = np.array([[G.nodes[node_id][f] for f in features] for node_id in node_list])
     
@@ -79,47 +75,49 @@ def classify_with_ensemble(parameters, model_paths, threshold_paths, graph_file,
         batch=torch.zeros(x.shape[0], dtype=torch.long)
     ).to(device)
 
-    # --- Step 2: Run inference with each model and apply its specific thresholds ---
+    # run inference with each model and apply its specific thresholds
     all_final_scores = []
     
     with torch.no_grad():
         for model_path, thresh_path in zip(model_paths, threshold_paths):
-            # Create a temporary config to hold fold-specific thresholds
             temp_params = Config(parameters.config_file_path)
             temp_params._params.update(parameters._params)
+
+            # load the specific thresholds optimized for this fold during training
             with open(thresh_path, 'r') as f:
                 thresholds = yaml.safe_load(f)
             temp_params['plasmid_threshold'] = thresholds['plasmid_threshold']
             temp_params['chromosome_threshold'] = thresholds['chromosome_threshold']
 
-            # Load the model for the current fold
+            # instantiate the model architecture
             if temp_params['model_type'] == 'GCNModel':
                 model = GCNModel(temp_params).to(device)
             else: # GGNNModel
                 model = GGNNModel(temp_params).to(device)
             
+            # load weights and set to eval mode
             model.load_state_dict(torch.load(model_path, map_location=device))
             model.eval()
 
-            # Get raw probabilities from the model
+            # forward pass to get logits
             logits = model(data_obj)
             
-            # --- Handle different output activations ---
+            # handle output activation (some models output raw logits, others probs)
             if temp_params['output_activation'] is None:
                 probs = torch.sigmoid(logits) # Convert logits to probs
             else:
-                probs = logits # Output is already probabilities
+                probs = logits 
             
-            # Apply this fold's specific thresholds to get final, scaled scores
+            # scale the raw probabilities using the fold-specific thresholds
             final_scores = torch.from_numpy(
                 apply_thresholds(probs.cpu().numpy(), temp_params)
             ).to(device)
             all_final_scores.append(final_scores)
 
-    # --- Step 3: Average the final scaled scores from all models ---
+    # average the final scaled scores from all models
     ensemble_final_scores = torch.stack(all_final_scores).mean(dim=0).cpu().numpy()
 
-    # --- Step 4: Format the results into a DataFrame ---
+    # format the results into a dataframe
     output_rows = []
     for i, node_id in enumerate(node_list):
         plasmid_score = ensemble_final_scores[i, 0]
@@ -141,7 +139,7 @@ def classify_with_ensemble(parameters, model_paths, threshold_paths, graph_file,
     )
 
 def main_set(args):
-    """Classifies a set of GFA files listed in a CSV."""
+    """classifies a set of GFA files listed in a CSV."""
     model_dir = os.path.join("runs", args.run_name, "final_model")
     classify_dir = os.path.join("runs", args.run_name, "classify")
     os.makedirs(classify_dir, exist_ok=True)
@@ -161,7 +159,6 @@ def main_set(args):
         )
         all_dfs.append(prediction_df)
     
-    # Concatenate all results and save at once
     final_df = pd.concat(all_dfs, ignore_index=True)
     final_df.to_csv(output_path, header=True, index=False, mode='w')
     print(f"\n✅ Classification complete. Results saved to {output_path}")
@@ -172,33 +169,22 @@ def main_gfa(args):
     classify_dir = os.path.join("runs", args.run_name, "classify")
     os.makedirs(classify_dir, exist_ok=True)
 
-    # --- MODIFICATION START ---
-    
-    # Get the base filename, e.g., "robertson-benchmark_abau-SAMN10163228-u.gfa.gz"
     base_gfa_name = os.path.basename(args.graph_file)
 
-    # Intelligently get the sample_id, removing known extensions
-    # e.g., "robertson-benchmark_abau-SAMN10163228-u"
     if base_gfa_name.endswith(".gfa.gz"):
-        sample_id = base_gfa_name[:-7] # Remove .gfa.gz
+        sample_id = base_gfa_name[:-7] 
     elif base_gfa_name.endswith(".gfa"):
-        sample_id = base_gfa_name[:-4] # Remove .gfa
+        sample_id = base_gfa_name[:-4] 
     else:
-        # Fallback
         sample_id = base_gfa_name.split('.')[0]
     
-    # Check if output_filename was provided
     if args.output_filename:
         output_filename = args.output_filename
     else:
-        # --- MODIFICATION: Removed '_plasgraph' from this line ---
         output_filename = f"{sample_id}.csv"
         print(f"No output filename provided. Auto-generating: {output_filename}")
     
-    # The output path is now based on the (potentially auto-generated) filename
     output_path = os.path.join(classify_dir, output_filename)
-    
-    # --- MODIFICATION END ---
     
     parameters, model_paths, threshold_paths = load_ensemble_and_config(model_dir)
     
@@ -206,8 +192,8 @@ def main_gfa(args):
     prediction_df = classify_with_ensemble(
         parameters, model_paths, threshold_paths,
         graph_file=args.graph_file,
-        file_prefix='', # No prefix for a direct file path
-        sample_id=sample_id # Use the new, robust sample_id
+        file_prefix='', 
+        sample_id=sample_id 
     )
     
     prediction_df.to_csv(output_path, header=True, index=False, mode='w')
@@ -219,23 +205,20 @@ if __name__ == "__main__":
     parser.add_argument("--run_name", required=True, help="Unique name of the experiment run to use for classification.")
     subparsers = parser.add_subparsers(dest='command', required=True)
 
-    # Subparser for classifying a set of files from a list
     p_set = subparsers.add_parser('set', help="Classify a set of GFA files from a list.")
     p_set.add_argument("test_file_list", help="CSV file listing samples to classify (e.g., 'test_files.csv').")
     p_set.add_argument("file_prefix", help="Common path prefix for filenames in the list (e.g., 'data/graphs/').")
     p_set.add_argument("output_filename", help="Name for the output CSV file (e.g., 'results.csv').")
     p_set.set_defaults(func=main_set)
 
-    # Subparser for classifying a single GFA file
     p_gfa = subparsers.add_parser('gfa', help="Classify a single GFA file.")
     p_gfa.add_argument("graph_file", help="Path to the input GFA or GFA.gz file.")
     
-    # Make the output_filename optional
     p_gfa.add_argument(
         "output_filename", 
         help="Name for the output CSV file. If omitted, it will be auto-generated based on the GFA filename (e.g., 'my_sample.csv').",
-        nargs='?',  # Makes the argument optional
-        default=None # Sets the default value if not provided
+        nargs='?',  
+        default=None 
     )
     
     p_gfa.set_defaults(func=main_gfa)

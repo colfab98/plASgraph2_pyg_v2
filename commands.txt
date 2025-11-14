@@ -29,7 +29,7 @@ If Mac:
 
 
 
-export RUN_NAME="name"
+export RUN_NAME="run_"
 
 
 Optuna:
@@ -90,6 +90,8 @@ PYTHONUNBUFFERED=1 accelerate launch --num_processes=1 --mixed_precision=fp16 -m
 
 Analyse Edge Gates:
 
+export RUN_NAME="name"
+
 mkdir -p runs/${RUN_NAME}/gate_analysis
 python -u -m scripts.analyze_gates \
     --run_name ${RUN_NAME} \
@@ -139,7 +141,7 @@ python -m scripts.explain node \
 Classify & Visualize predictions:
 
 RUN_NAME="run_14.1"
-GFA_PATH="plASgraph2_pyg_v2/plasgraph2-datasets/eskapee-test/robertson-benchmark_abau-SAMN10163228-u.gfa.gz"
+GFA_PATH="plASgraph2_pyg_v2/plasgraph2-datasets/cfre-test/shaw-2021_cfre-SAMN15148288-u.gfa.gz"
 
 mkdir -p "runs/${RUN_NAME}/classify"
 python -m scripts.classify \
@@ -149,7 +151,7 @@ python -m scripts.classify \
     2> "runs/${RUN_NAME}/classify/classify.err"
 
 
-LABEL_FILE="plASgraph2_pyg_v2/plasgraph2-datasets/eskapee-test/robertson-benchmark_abau-SAMN10163228-u.gfa.csv"
+LABEL_FILE="plASgraph2_pyg_v2/plasgraph2-datasets/cfre-test/shaw-2021_cfre-SAMN15148288-u.gfa.csv"
 
 python -m scripts.visualize_predictions \
     --run_name "${RUN_NAME}" \

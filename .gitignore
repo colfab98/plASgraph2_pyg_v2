@@ -11,6 +11,8 @@ runs/
 
 # Dataset
 plasgraph2-datasets/
-plasgraph2-datasets_new/
+# plasgraph2-datasets_new/
 
 slurm_logs/
+
+scripts/explain.py

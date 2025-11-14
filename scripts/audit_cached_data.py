@@ -1,4 +1,3 @@
-# In audit_cached_data.py
 import argparse
 import torch
 import networkx as nx
@@ -7,13 +6,15 @@ import pandas as pd
 import seaborn as sns
 import matplotlib.pyplot as plt
 
-# Import the necessary classes from your project structure
 from plasgraph.data import Dataset_Pytorch
 from plasgraph.config import config as Config
 
 
 class DummyAccelerator:
-    """A mock class that satisfies the Dataset_Pytorch constructor."""
+    """
+    a mock class that satisfies the Dataset_Pytorch constructor.
+    allows loading the dataset without initializing a full distributed environment.
+    """
     def __init__(self):
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -23,11 +24,11 @@ class DummyAccelerator:
 
 def analyze_and_plot_feature_distributions(graph: nx.Graph, features_to_analyze: list[str], output_dir: str):
     """
-    Analyzes and plots the distribution of specified node features.
+    analyzes and plots the distribution of specified node features.
     
-    For each feature, it calculates summary statistics and saves a histogram plot.
+    for each feature, it calculates summary statistics and saves a histogram plot.
     """
-    print(f"📊 Analyzing feature distributions. Plots will be saved to: {output_dir}")
+    print(f" Analyzing feature distributions. Plots will be saved to: {output_dir}")
     os.makedirs(output_dir, exist_ok=True)
 
     node_data = {node: data for node, data in graph.nodes(data=True)}
@@ -35,13 +36,13 @@ def analyze_and_plot_feature_distributions(graph: nx.Graph, features_to_analyze:
 
     for feature in features_to_analyze:
         if feature not in df.columns:
-            print(f"\n⚠️ Feature '{feature}' not found in the graph attributes. Skipping.")
+            print(f"\n Feature '{feature}' not found in the graph attributes. Skipping.")
             continue
         
         feature_series = df[feature].dropna()
 
         if feature_series.empty:
-            print(f"\n⚠️ Feature '{feature}' has no data. Skipping.")
+            print(f"\n Feature '{feature}' has no data. Skipping.")
             continue
             
         print(f"\n--- Analysis for feature: '{feature}' ---")
@@ -53,7 +54,6 @@ def analyze_and_plot_feature_distributions(graph: nx.Graph, features_to_analyze:
         sns.histplot(feature_series, kde=True, bins=50)
         plt.title(f"Distribution of Node Feature: '{feature}'", fontsize=16)
         
-        # --- CHANGE: Removed all automatic log scaling logic for axes. ---
         plt.xlabel(f"Value of {feature}", fontsize=12)
         plt.ylabel("Frequency (Number of Nodes)", fontsize=12)
 
@@ -64,15 +64,16 @@ def analyze_and_plot_feature_distributions(graph: nx.Graph, features_to_analyze:
         plt.savefig(plot_path)
         plt.close()
 
-        print(f"✅ Histogram saved to: {plot_path}")
+        print(f" Histogram saved to: {plot_path}")
 
 
 def analyze_edge_attributes(graph: nx.Graph, output_dir: str):
     """
-    Analyzes and plots the distribution of the primary edge attribute.
+    analyzes and plots the distribution of the primary edge attribute.
+    this helps confirm if edge features (like embedding similarity) are providing meaningful signals.
     """
     print("\n" + "="*50)
-    print("🔬 Analyzing Edge Attributes")
+    print(" Analyzing Edge Attributes")
     print("="*50)
 
     edge_attrs = list(nx.get_edge_attributes(graph, "embedding_cosine_similarity").values())
@@ -83,7 +84,7 @@ def analyze_edge_attributes(graph: nx.Graph, output_dir: str):
         attr_name = "kmer_dot_product"
 
     if not edge_attrs:
-        print("\n⚠️ No edge attributes ('embedding_cosine_similarity' or 'kmer_dot_product') found. Skipping analysis.")
+        print("\n No edge attributes ('embedding_cosine_similarity' or 'kmer_dot_product') found. Skipping analysis.")
         return
 
     edge_series = pd.Series(edge_attrs)
@@ -97,7 +98,7 @@ def analyze_edge_attributes(graph: nx.Graph, output_dir: str):
     total_edges = len(edge_series)
     if total_edges > 0:
         zero_percentage = (zero_count / total_edges) * 100
-        print(f"\n🔍 Found {zero_count} edges with an attribute of exactly 0 ({zero_percentage:.2f}% of total).")
+        print(f"\n Found {zero_count} edges with an attribute of exactly 0 ({zero_percentage:.2f}% of total).")
 
     plt.figure(figsize=(10, 6))
     sns.histplot(edge_series, bins=50)
@@ -111,7 +112,7 @@ def analyze_edge_attributes(graph: nx.Graph, output_dir: str):
     plt.savefig(plot_path)
     plt.close()
 
-    print(f"✅ Edge attribute histogram saved to: {plot_path}")
+    print(f" Edge attribute histogram saved to: {plot_path}")
 
 
 def main():
@@ -132,10 +133,10 @@ def main():
 
     cache_file_path = os.path.join(data_cache_dir, "processed", "all_graphs.pt")
     if not os.path.exists(cache_file_path):
-        print(f"❌ Error: Cache file not found at {cache_file_path}")
+        print(f" Error: Cache file not found at {cache_file_path}")
         return
 
-    print(f"✅ Cache found. Loading processed data from: {cache_file_path}")
+    print(f" Cache found. Loading processed data from: {cache_file_path}")
     dummy_accelerator = DummyAccelerator()
     parameters = Config(args.config_file)
     all_graphs_dataset = Dataset_Pytorch(
@@ -151,14 +152,13 @@ def main():
 
     if args.feature:
         features_to_audit = [args.feature]
-        print(f"\n🔬 Auditing single specified feature: '{args.feature}'")
+        print(f"\n Auditing single specified feature: '{args.feature}'")
     else:
         features_to_audit = list(parameters["features"]) + ["degree", "length", "gc"]
-        print(f"\n🔬 Auditing all model and graph features...")
+        print(f"\n Auditing all model and graph features...")
     
     analyze_and_plot_feature_distributions(G, features_to_audit, output_dir)
     analyze_edge_attributes(G, output_dir)
-
 
 if __name__ == "__main__":
     main()

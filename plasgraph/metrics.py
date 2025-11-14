@@ -1,5 +1,3 @@
-# In plasgraph/metrics.py
-
 import numpy as np
 import torch
 from sklearn.metrics import f1_score, accuracy_score, precision_score, recall_score, roc_auc_score

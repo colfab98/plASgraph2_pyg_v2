@@ -5,12 +5,14 @@ n_labels: 2
 minimum_contig_length: 100
 feature_generation_method: emb
 emb_model_name: zhihan1996/DNABERT-2-117M
-num_workers: 8   
+num_workers: 0
+assemblies: all
+dataset_type: original
 
 # Model Architecture Parameters
 model_type: GGNNModel
 n_gnn_layers: 6
-n_channels_preproc: 32
+n_channels_preproc: 10
 n_channels: 32
 preproc_activation: sigmoid
 gcn_activation: relu
@@ -19,9 +21,10 @@ output_activation: none
 tie_gnn_layers: true
 neighbors_first_hop: 15
 neighbors_subsequent_hops: 10
+use_edge_gate: true
 edge_gate_hidden_dim: 32
 edge_gate_depth: 3
-use_edge_gate: true
+use_edge_read_counts: false
 use_GraphNorm: false
 use_gru_update: true
 
@@ -32,20 +35,24 @@ loss_function: crossentropy
 plasmid_ambiguous_weight: 1
 dropout_rate: 0.1
 l2_reg: 2.5e-4
-gradient_clipping: 1
-early_stopping_patience: 200
-early_stopping_patience_retrain : 200
-scheduler_patience : 50
+gradient_clipping: 0.0
+early_stopping_patience: 2000
+early_stopping_patience_retrain : 2000
+scheduler_patience : 100
 scheduler_factor : 0.5
 random_seed: 123
-batch_size: 8192
+batch_size: 2048
 
 # HPO and Evaluation Parameters
-k_folds: 5
+training_mode: k-fold
 validation_split_mode: stratified
-optuna_n_trials: 50
-epochs_trials: 500
-n_startup_trials: 10 
+k_folds: 5
+optuna_n_trials: 100
+training_style: neighbor_sampling
+epochs_trials: 1000
+n_startup_trials: 20
+
+
 set_thresholds: true
 plasmid_threshold: 0.5
 chromosome_threshold: 0.5

@@ -23,6 +23,16 @@ from optuna.visualization.matplotlib import (
 from accelerate import Accelerator
 
 def main():
+    """
+    main function to run hyperparameter optimization (hpo) using optuna.
+    
+    orchestrates the hpo process by:
+    1. initializing the accelerator for distributed execution.
+    2. preparing the dataset and cross-validation splits.
+    3. creating (or loading) a shared optuna study database.
+    4. distributing trial execution across available gpu processes.
+    5. saving the best hyperparameters and generating visualization plots.
+    """
     parser = argparse.ArgumentParser(description="Run Optuna hyperparameter search for plASgraph2.")
     parser.add_argument("config_file", help="YAML configuration file")
     parser.add_argument("train_file_list", help="CSV file listing training samples")
@@ -35,9 +45,8 @@ def main():
 
     data_cache_dir = os.path.join("processed_data", args.run_name, "train")
 
-
-    # automatically detects hardware setup (single GPU, multiple GPUs, TPUs, etc.) and prepares 
-    # PyTorch training components (model, optimizer, data loaders) to run seamlessly in that environment
+    # automatically detects hardware setup (single gpu, multi-gpu, etc.) 
+    # this is crucial for running separate hpo trials in parallel on different gpus
     accelerator = Accelerator()
 
     if accelerator.is_main_process:
@@ -46,14 +55,10 @@ def main():
         print(f"Dataset: {os.path.basename(args.train_file_list)}")
         print("----------------------------------------")
 
-
-    # # creates the main configuration object for the script by reading a user-provided YAML file (plasgraph_config.yaml)
-    # parameters = Config(args.config_file)
-    # attach the path of the loaded configuration file to the parameters object itself
     parameters.config_file_path = args.config_file
 
-    # instantiates the custom Dataset_Pytorch class from data.py
-    # uses a caching mechanism: if a pre-processed graph exists in 'root' it loads it
+    # instantiates the custom dataset class
+    # uses a caching mechanism: if pre-processed data exists in 'root', it loads it directly
     all_graphs = Dataset_Pytorch(
         root=data_cache_dir,
         file_prefix=args.file_prefix,           # path prefix for raw data files
@@ -80,10 +85,11 @@ def main():
     all_sample_ids = np.array(sorted(list(set(G.nodes[node_id]["sample"] for node_id in node_list))))
     accelerator.print(f"✅ Found {len(all_sample_ids)} unique samples for splitting.")
 
-    # Get indices of all nodes that have a label
+    # get indices of all nodes that have a valid label (excluding 'unlabeled')
     labeled_indices = np.array([i for i, node_id in enumerate(node_list) if G.nodes[node_id]["text_label"] != "unlabeled"])
 
-    # --- Stratification Logic ---
+    # --- stratification logic ---
+    # analyze plasmid distribution per sample to ensure balanced folds
     if accelerator.is_main_process:
         print("🔬 Analyzing sample characteristics for stratified splitting...")
     sample_plasmid_ratios = []
@@ -109,12 +115,9 @@ def main():
     if accelerator.is_main_process:
         print("  > Stratification groups created based on plasmid ratios.")
 
-
-    # Perform the Stratified K-Fold split on the sample IDs
+    # perform the stratified k-fold split on the sample ids
     skf = StratifiedKFold(n_splits=parameters["k_folds"], shuffle=True, random_state=parameters["random_seed"])
     splits = list(skf.split(all_sample_ids, stratification_y))
-
-
 
     accelerator.print(f"Using device: {accelerator.device}")
 
@@ -222,7 +225,6 @@ def main():
 
         except Exception as e:
             print(f"Could not generate all Optuna visualizations: {e}")
-
 
 if __name__ == "__main__":
     main()

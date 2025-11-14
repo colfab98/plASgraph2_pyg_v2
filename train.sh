@@ -8,7 +8,7 @@
 #SBATCH --output=slurm_logs/%x-%j.out
 #SBATCH --error=slurm_logs/%x-%j.err
 
-export RUN_NAME="run_14.1" 
+export RUN_NAME="run_18" 
 
 mkdir -p runs/${RUN_NAME}
 mkdir -p runs/${RUN_NAME}/final_model
@@ -21,8 +21,16 @@ PYTHONUNBUFFERED=1 accelerate launch --num_processes=4 --mixed_precision=fp16 -m
     plasgraph2-datasets/ \
     > runs/${RUN_NAME}/final_model/train.log 2> runs/${RUN_NAME}/final_model/train.err
 
+# Filtered dataset
+# PYTHONUNBUFFERED=1 accelerate launch --num_processes=4 --mixed_precision=fp16 -m scripts.train \
+#     --run_name ${RUN_NAME} \
+#     plasgraph_config.yaml \
+#     plasgraph2-datasets/eskapee-train_filtered.csv \
+#     plasgraph2-datasets/ \
+#     > runs/${RUN_NAME}/final_model/train.log 2> runs/${RUN_NAME}/final_model/train.err
+
 # My own dataset 
-# PYTHONUNBUFFERED=1 accelerate launch --num_processes=1 --mixed_precision=fp16 -m scripts.train \
+# PYTHONUNBUFFERED=1 accelerate launch --num_processes=4 --mixed_precision=fp16 -m scripts.train \
 #     --run_name ${RUN_NAME} \
 #     plasgraph_config.yaml \
 #     plasgraph2-datasets_new/eskapee-train.csv \

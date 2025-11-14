@@ -19,9 +19,7 @@ def set_all_seeds(seed):
     torch.manual_seed(seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed(seed)
-        torch.cuda.manual_seed_all(seed)  # if you are using multi-GPU.
-    # The following two lines are crucial for deterministic results on CUDA.
-    # Note that they can negatively impact performance.
+        torch.cuda.manual_seed_all(seed) 
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
 
@@ -80,7 +78,6 @@ def plot_gradient_magnitudes(grad_data, epoch, log_dir, plot_frequency=10):
     """
     Generates and saves a violin plot of gradient magnitudes grouped by layer.
     """
-
     if epoch % plot_frequency != 0:
         return
     if not grad_data: 
@@ -140,7 +137,6 @@ def plot_gradient_magnitudes_best(grad_data, epoch, log_dir):
     plt.xticks(rotation=45, ha='right')
     plt.tight_layout()
     
-    # --- Use a unique filename ---
     plot_path = os.path.join(log_dir, f"gradient_magnitudes_BEST_EPOCH_{epoch}.png") 
     
     plt.savefig(plot_path)
@@ -182,43 +178,6 @@ def plot_f1_violin(plasmid_scores, chromosome_scores, output_dir):
     plt.close()
     print(f"\n✅ Evaluation plot saved to: {plot_path}")
 
-
-
-# def set_thresholds(model, data, masks_validate, parameters, log_dir=None):
-#     """Set optimal thresholds (plasmid, chromosome) by maximizing F1 on validation set,
-#     and store them in the parameters object. This version works with PyTorch models/data."""
-
-#     # Ensure model is in evaluation mode
-#     model.eval()
-    
-#     # Move data to model's device (if not already there)
-#     device = next(model.parameters()).device
-#     data = data.to(device)
-
-#     with torch.no_grad():
-#         outputs = torch.sigmoid(model(data))
-
-#         labels_plasmid_val = data.y[masks_validate.bool(), 0]
-#         probs_plasmid_val = outputs[masks_validate.bool(), 0]
-
-#         y_true_plasmid = labels_plasmid_val.cpu().numpy()
-#         y_probs_plasmid = probs_plasmid_val.cpu().numpy()
-#         sample_weight_plasmid = masks_validate[masks_validate.bool()].cpu().numpy() # weights for validation nodes
-        
-#         plasmid_scores = score_thresholds(y_true_plasmid, y_probs_plasmid, sample_weight_plasmid)
-#         store_best(plasmid_scores, parameters, 'plasmid_threshold', log_dir)
-
-#         # --- Process Chromosome ---
-#         # Select only validation set nodes for chromosome output
-#         labels_chromosome_val = data.y[masks_validate.bool(), 1]
-#         probs_chromosome_val = outputs[masks_validate.bool(), 1]
-
-#         y_true_chromosome = labels_chromosome_val.cpu().numpy()
-#         y_probs_chromosome = probs_chromosome_val.cpu().numpy()
-#         sample_weight_chromosome = masks_validate[masks_validate.bool()].cpu().numpy()
-
-#         chromosome_scores = score_thresholds(y_true_chromosome, y_probs_chromosome, sample_weight_chromosome)
-#         store_best(chromosome_scores, parameters, 'chromosome_threshold', log_dir)
 
 def set_thresholds_from_predictions(y_true, y_probs, parameters, log_dir=None):
     """

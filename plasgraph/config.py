@@ -45,6 +45,7 @@ PARAMS = [
     {'name': 'dropout_rate', 'type': float, 'default': 0.1}, # probability of dropout for regularization in the neural network layers
     {'name': 'l2_reg', 'type': float, 'default': 2.5e-4}, # strength of L2 weight decay regularization applied by the optimizer
     {'name': 'gradient_clipping', 'type': float, 'default': 0.0}, # maximum value to clip gradients to, which prevents exploding gradients; 0.0 disables it
+    {'name': 'clipping_mode', 'type': str, 'default': 'off'}, # 'on' or 'off', helper param for HPO
     {'name': 'early_stopping_patience', 'type': int, 'default': 100}, # number of epochs to wait for validation loss to improve before stopping HPO trials
     {'name': 'early_stopping_patience_retrain', 'type': int, 'default': 100}, # patience for early stopping during the final model training run
     {'name': 'scheduler_patience', 'type': int, 'default': 10}, # number of epochs the learning rate scheduler will wait for improvement before reducing the LR

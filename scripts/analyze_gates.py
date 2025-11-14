@@ -34,18 +34,12 @@ class DummyAccelerator:
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
-def create_plots(df, layer_num, output_dir, feature_method):
+# --- MODIFICATION START ---
+# The function signature is changed to accept the full 'parameters' object
+def create_plots(df, layer_num, output_dir, parameters):
     """Generates and saves a set of plots for a layer's gate data."""
     
-    # --- Determine the correct label based on the feature method ---
-    if feature_method == 'emb':
-        attr_label = 'Edge Attribute (DNABERT Cosine Similarity)'
-    elif feature_method == 'kmer':
-        attr_label = 'Edge Attribute (K-mer Dot Product)'
-    else:
-        attr_label = 'Edge Attribute'
-    # -------------------------------------------------------------
-
+    # --- Plot 1: Gate Distribution (Unchanged) ---
     plt.figure(figsize=(10, 6))
     sns.histplot(df['gate_value'], bins=50, kde=True)
     plt.title(f'Layer {layer_num}: Distribution of Edge Gate Values')
@@ -55,16 +49,44 @@ def create_plots(df, layer_num, output_dir, feature_method):
     plt.savefig(os.path.join(output_dir, f'gate_dist_layer_{layer_num}.png'))
     plt.close()
 
+    # --- Plot 2: Gate vs. Similarity ---
+    feature_method = parameters['feature_generation_method']
+    if feature_method == 'emb':
+        sim_label = 'Edge Attribute (DNABERT Cosine Similarity)'
+    elif feature_method == 'kmer':
+        sim_label = 'Edge Attribute (K-mer Dot Product)'
+    else:
+        sim_label = 'Edge Similarity Attribute'
+
     plt.figure(figsize=(10, 6))
+    # Sample the dataframe once for all scatter plots
     sample_df = df.sample(n=min(5000, len(df)))
-    sns.scatterplot(data=sample_df, x='edge_attr', y='gate_value', alpha=0.5, s=10)
-    plt.title(f'Layer {layer_num}: Gate Value vs. Edge Attribute')
-    plt.xlabel(attr_label) # <-- Use the dynamic label here
+    
+    # Use the 'edge_similarity' column
+    sns.scatterplot(data=sample_df, x='edge_similarity', y='gate_value', alpha=0.5, s=10)
+    plt.title(f'Layer {layer_num}: Gate Value vs. Edge Similarity')
+    plt.xlabel(sim_label)
     plt.ylabel('Gate Value')
     plt.grid(True, alpha=0.3)
-    plt.savefig(os.path.join(output_dir, f'gate_vs_attr_layer_{layer_num}.png'))
+    # Save with a new, more specific name
+    plt.savefig(os.path.join(output_dir, f'gate_vs_similarity_layer_{layer_num}.png'))
     plt.close()
 
+    # --- Plot 3: Gate vs. Read Support (NEW PLOT) ---
+    # This plot is only generated if the 'use_edge_read_counts' parameter is True
+    if parameters['use_edge_read_counts']:
+        plt.figure(figsize=(10, 6))
+        # Use the 'edge_read_support' column
+        sns.scatterplot(data=sample_df, x='edge_read_support', y='gate_value', alpha=0.5, s=10)
+        plt.title(f'Layer {layer_num}: Gate Value vs. Read Support')
+        # The feature is log-transformed in data.py
+        plt.xlabel('Edge Attribute (Log Read Support)') 
+        plt.ylabel('Gate Value')
+        plt.grid(True, alpha=0.3)
+        plt.savefig(os.path.join(output_dir, f'gate_vs_read_support_layer_{layer_num}.png'))
+        plt.close()
+    
+    # --- Plot 4: Gate by Type (Previously Plot 3) ---
     if 'connection_type' in df.columns:
         plt.figure(figsize=(12, 7))
         order = sorted(df['connection_type'].unique())
@@ -76,6 +98,7 @@ def create_plots(df, layer_num, output_dir, feature_method):
         plt.tight_layout()
         plt.savefig(os.path.join(output_dir, f'gate_by_type_layer_{layer_num}.png'))
         plt.close()
+# --- MODIFICATION END ---
 
 
 def main():
@@ -86,11 +109,8 @@ def main():
     args = parser.parse_args()
 
     data_cache_dir = os.path.join("processed_data", args.run_name, "train")
-
     run_dir = os.path.join("runs", args.run_name)
-
     model_dir = os.path.join(run_dir, "final_model")
-
     output_dir = os.path.join(run_dir, "gate_analysis")
     csv_dir = os.path.join(output_dir, "csv_reports")
     plots_dir = os.path.join(output_dir, "plots")
@@ -99,13 +119,11 @@ def main():
 
     print(f"📊 Analysis results will be saved to: {output_dir}")
 
-
     config_path = os.path.join(model_dir, "base_model_config.yaml")
     with open(config_path, 'r') as f:
         config_data = yaml.safe_load(f)
     parameters = Config(config_path)
     
-    # Handle tuple feature from older configs
     if isinstance(parameters['features'], str):
         parameters._params['features'] = tuple(parameters['features'].split(','))
 
@@ -136,29 +154,23 @@ def main():
     model_path = os.path.join(ensemble_dir, sorted(fold_models)[0])
     print(f"Using model: {model_path}")
 
-    model = GGNNModel(parameters) # The real model from models.py
+    model = GGNNModel(parameters)
     model.load_state_dict(torch.load(model_path, map_location=DEVICE))
     model.to(DEVICE)
     model.eval()
     print("Model loaded.")
 
     print("\nRunning gate analysis...")
-    # 2. Turn on analysis mode
     model.set_analysis_mode(True)
 
-    # 3. Run a single, normal forward pass
     with torch.no_grad():
         _ = model(data.to(DEVICE))
 
-    # 4. Retrieve the captured data
     gate_tensors_per_layer = model.get_gate_data()
-
-    # 5. Turn off analysis mode (good practice)
     model.set_analysis_mode(False)
     
     print("Analysis complete. Generating reports...")
     
-    # --- PROCESSING THE DATA IS NOW SIMPLER ---
     node_labels = [G.nodes[node_id]["text_label"] for node_id in node_list]
 
     for i, gate_values_tensor in enumerate(gate_tensors_per_layer):
@@ -169,12 +181,30 @@ def main():
             data.edge_index, edge_attr=data.edge_attr, num_nodes=data.num_nodes, fill_value=1.
         )
 
-        df = pd.DataFrame({
+        # --- MODIFICATION START ---
+        # This block dynamically creates the dataframe columns
+        # based on the 'use_edge_read_counts' parameter.
+        
+        edge_attr_data = edge_attr_sl.cpu().numpy()
+
+        df_data = {
             'source_idx': edge_index_sl[0].cpu().numpy(),
             'target_idx': edge_index_sl[1].cpu().numpy(),
-            'edge_attr': edge_attr_sl.squeeze(-1).cpu().numpy() if edge_attr_sl is not None else 0,
             'gate_value': gate_values_tensor.squeeze(-1).cpu().numpy()
-        })
+        }
+
+        # The model was trained with both similarity and read counts
+        if parameters['use_edge_read_counts']:
+            # edge_attr_data is shape [N, 2]
+            df_data['edge_similarity'] = edge_attr_data[:, 0]
+            df_data['edge_read_support'] = edge_attr_data[:, 1]
+        else:
+            # edge_attr_data is shape [N, 1]
+            df_data['edge_similarity'] = edge_attr_data.squeeze(-1)
+
+        df = pd.DataFrame(df_data)
+        # --- MODIFICATION END ---
+
 
         df['source_label'] = df['source_idx'].map(lambda idx: node_labels[idx])
         df['target_label'] = df['target_idx'].map(lambda idx: node_labels[idx])
@@ -182,18 +212,19 @@ def main():
         df['connection_type'] = df.apply(
             lambda row: "-".join(sorted([row['source_label'], row['target_label']])), axis=1
         )
-
-
         
         csv_path = os.path.join(csv_dir, f'gate_analysis_layer_{layer_num}.csv')
         df.to_csv(csv_path, index=False)
         print(f"✅ Saved detailed data to {csv_path}")
 
         print("Gate Value Summary:")
-        # ... (code to save CSV) ...
         print(df['gate_value'].describe())
 
-        create_plots(df, layer_num, plots_dir, parameters['feature_generation_method']) # <-- CHANGE THIS LINE
+        # --- MODIFICATION START ---
+        # Pass the full parameters object to the plotting function
+        create_plots(df, layer_num, plots_dir, parameters)
+        # --- MODIFICATION END ---
+        
         print(f"✅ Saved plots for Layer {layer_num}")
         
     print("\nAll done!")
